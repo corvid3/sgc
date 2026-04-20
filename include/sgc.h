@@ -2,6 +2,7 @@
 
 /* simple compacting garbage collector */
 
+#include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -45,13 +46,17 @@ struct sgc
   size_t gl_max;
 
   enum sgc_state state;
+
+  jmp_buf oom_leave;
 };
 
 #define SGC_UTILIZATION(sgc) (sgc).bump
 
 enum : uintptr_t
 {
+  /* a sgc instance can hold up to 64gb of memory */
   SGC_REF_MASK = (1UL << 36U) - 1UL,
+
   /* ~8kb of overhead */
   SGC_DEFAULT_GLMAXSIZE = 1024,
 
@@ -70,6 +75,9 @@ sgc_init(size_t heap_size,
 void
 sgc_uninit(struct sgc*);
 
+/* attempts to allocate space for a type.
+ * returns NULLREF if there is not enough space for the allocation.
+ * does not invoke sgc_collect. */
 sgc_ref
 sgc_alloc(struct sgc*, struct sgc_type const*);
 
@@ -81,6 +89,13 @@ sgc_resolve_type(struct sgc*, sgc_ref);
 void
 sgc_mark(struct sgc*, sgc_ref*);
 
-/* forces a collection */
-void
+/* runs the garbage collector, updating any native references.
+ * returns 0 on success
+ * returns 1 on out-of-memory:
+ *   the GC requires some memory overhead to keep track of the
+ *   set of marked objects; if the GC runs out of overhead,
+ *   the system will fail to gc.
+ * FIXME: maybe allow arbitrary greylist reallocations?
+ */
+int
 sgc_collect(struct sgc*);
