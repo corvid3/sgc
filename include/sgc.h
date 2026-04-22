@@ -43,6 +43,7 @@ struct sgc
 
   sgc_ref* gl;
   size_t gl_len;
+  size_t gl_cap;
   size_t gl_max;
 
   enum sgc_state state;
@@ -54,18 +55,14 @@ struct sgc
 
 enum : uintptr_t
 {
-  /* a sgc instance can hold up to 64gb of memory */
+  /* ~64gb of accessable memory */
   SGC_REF_MASK = (1UL << 36U) - 1UL,
-
-  /* ~8kb of overhead */
-  SGC_DEFAULT_GLMAXSIZE = 1024,
-
   SGC_ALIGNMENT = 8,
-
   SGC_NULLREF = SGC_REF_MASK,
+  SGC_GLINDEF = -1UL,
 };
 
-/* gl_maxsize can be set to -1U for default */
+/* @param gl_maxsize | set to SGC_GLINDEF to allow for indefinite resizing */
 struct sgc
 sgc_init(size_t heap_size,
          size_t gl_maxsize,
@@ -81,8 +78,11 @@ sgc_uninit(struct sgc*);
 sgc_ref
 sgc_alloc(struct sgc*, struct sgc_type const*);
 
+[[gnu::hot]]
 void*
 sgc_resolve(struct sgc*, sgc_ref);
+
+[[gnu::hot]]
 struct sgc_type const*
 sgc_resolve_type(struct sgc*, sgc_ref);
 
@@ -95,7 +95,6 @@ sgc_mark(struct sgc*, sgc_ref*);
  *   the GC requires some memory overhead to keep track of the
  *   set of marked objects; if the GC runs out of overhead,
  *   the system will fail to gc.
- * FIXME: maybe allow arbitrary greylist reallocations?
  */
 int
 sgc_collect(struct sgc*);

@@ -22,7 +22,7 @@ list_visit(struct sgc* sgc, sgc_ref const ref)
 {
   struct list* list = sgc_resolve(sgc, ref);
   sgc_mark(sgc, &list->cdr);
-  printf("VISITED: %#x\n", ref);
+  // printf("VISITED: %#x\n", ref);
 }
 
 struct sgc_type const list_type = {
@@ -80,7 +80,8 @@ static sgc_ref
 cons(struct sgc* sgc, int car, sgc_ref cdr)
 {
   sgc_ref const list_ref = sgc_alloc(sgc, &list_type);
-  // printf("ALLOCATED: %#x\n", list_ref);
+  if (list_ref == SGC_NULLREF)
+    return SGC_NULLREF;
   struct list* list = sgc_resolve(sgc, list_ref);
   list->car = car;
   list->cdr = cdr;
@@ -92,18 +93,35 @@ alloc_list(struct sgc* sgc, struct root* root)
 {
   enum
   {
-    iterations = 5
+    iterations = 512000
   };
 
   pushframe(root);
   sgc_ref list = cons(sgc, rand(), SGC_NULLREF);
   addroot(root, &list);
 
-  for (unsigned i = 0; i < iterations; i++)
-    list = cons(sgc, rand(), list);
+  for (unsigned i = 0; i < iterations; i++) {
+    sgc_ref const new = cons(sgc, rand(), list);
+    if (new == SGC_NULLREF)
+      break;
+    list = new;
+  }
 
   popframe(root);
   return list;
+}
+
+static int
+listsize(struct sgc* sgc, sgc_ref ref)
+{
+  signed i = 0;
+  while (ref != SGC_NULLREF) {
+    struct list* list = sgc_resolve(sgc, ref);
+    ref = list->cdr;
+
+    i++;
+  }
+  return i;
 }
 
 static void
@@ -117,12 +135,22 @@ print_list(struct sgc* sgc, sgc_ref ref)
   putchar('\n');
 }
 
+static void
+print_root(struct sgc* sgc, struct root* root)
+{
+
+  printf("root: %#x %lu\n",
+         root->list_head,
+         ((struct list*)sgc_resolve(sgc, root->list_head))->car);
+}
+
 int
 main()
 {
   enum
   {
-    heapsize = 1024 * 64,
+    mibi = 1024 * 1024,
+    heapsize = mibi * 64,
   };
 
   struct root root;
@@ -132,16 +160,11 @@ main()
 
   struct sgc sgc = sgc_init(heapsize, -1, &root, (sgc_root_visit)root_visit);
 
-  print_list(&sgc, alloc_list(&sgc, &root));
+  alloc_list(&sgc, &root);
   root.list_head = alloc_list(&sgc, &root);
-  print_list(&sgc, root.list_head);
-
-  printf("UTILIZATION: %#x\n", SGC_UTILIZATION(sgc));
-  printf("BEFORE: %#x\n", root.list_head);
+  printf("%i %i/%i\n", listsize(&sgc, root.list_head), sgc.bump, sgc.size);
+  // print_list(&sgc, root.list_head);
   sgc_collect(&sgc);
-  printf("AFTER : %#x\n", root.list_head);
-  printf("NUMROOTS: %i\n", root.rootidx);
-  print_list(&sgc, root.list_head);
-  printf("UTILIZATION: %#x\n", SGC_UTILIZATION(sgc));
+  // print_list(&sgc, root.list_head);
   sgc_uninit(&sgc);
 }
