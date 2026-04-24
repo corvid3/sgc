@@ -10,10 +10,11 @@ struct list
 };
 
 static size_t
-list_size(struct sgc* sgc, sgc_ref const ref)
+list_size(struct sgc* sgc, sgc_ref const ref, void const* ctor)
 {
   (void)sgc;
   (void)ref;
+  (void)ctor;
   return sizeof(struct list);
 }
 
@@ -79,7 +80,7 @@ root_visit(struct sgc* sgc, struct root* root)
 static sgc_ref
 cons(struct sgc* sgc, int car, sgc_ref cdr)
 {
-  sgc_ref const list_ref = sgc_alloc(sgc, &list_type);
+  sgc_ref const list_ref = sgc_alloc(sgc, &list_type, 0);
   if (list_ref == SGC_NULLREF)
     return SGC_NULLREF;
   struct list* list = sgc_resolve(sgc, list_ref);

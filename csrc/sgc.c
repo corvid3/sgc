@@ -1,7 +1,10 @@
-#include "sgc.h"
 #include <assert.h>
 #include <setjmp.h>
 #include <stdlib.h>
+#include <sys/sysinfo.h>
+#include <threads.h>
+
+#include "sgc.h"
 
 enum sgc_state : uint32_t
 {
@@ -139,8 +142,8 @@ cleanupall(struct sgc* sgc)
     struct header* hdr = get_header(sgc, ref);
     if (hdr->type->cleanup)
       hdr->type->cleanup(sgc, ref);
-    ref +=
-      align(hdr->type->size(sgc, ref), SGC_ALIGNMENT) + sizeof(struct header);
+    ref += align(hdr->type->size(sgc, ref, 0), SGC_ALIGNMENT) +
+           sizeof(struct header);
   }
 }
 
@@ -229,7 +232,7 @@ static size_t
 slide(struct sgc* sgc, sgc_ref ref)
 {
   struct header* hdr = get_header(sgc, ref);
-  size_t const allocsize = hdr->type->size(sgc, ref);
+  size_t const allocsize = hdr->type->size(sgc, ref, 0);
 
   if (header_color(hdr) == BLACK) {
     sgc_ref const fwd = header_fwd(hdr);
@@ -259,12 +262,12 @@ static sgc_ref
 compactref(struct sgc* sgc, sgc_ref ref)
 {
   struct header* hdr = get_header(sgc, ref);
-  size_t const allocsize = hdr->type->size(sgc, ref);
+  size_t const allocsize = hdr->type->size(sgc, ref, 0);
 
   if (header_color(hdr) == BLACK) {
     header_setcolor(hdr, WHITE);
     sgc_ref const newspace =
-      allocspace(sgc, sgc_resolve_type(sgc, ref)->size(sgc, ref));
+      allocspace(sgc, sgc_resolve_type(sgc, ref)->size(sgc, ref, 0));
     header_setfwd(hdr, newspace);
   } else {
     if (hdr->type->cleanup)
@@ -328,12 +331,15 @@ sgc_collect(struct sgc* sgc)
 }
 
 sgc_ref
-sgc_alloc(struct sgc* restrict sgc, struct sgc_type const* restrict const type)
+sgc_alloc(struct sgc* restrict sgc,
+          struct sgc_type const* restrict const type,
+          void const* ctor_params)
 {
-  size_t const size = type->size(sgc, SGC_NULLREF);
+  size_t const size = type->size(sgc, SGC_NULLREF, ctor_params);
   sgc_ref const out = allocspace(sgc, size);
   if (out == SGC_NULLREF)
     return SGC_NULLREF;
+
   struct header* hdr = get_header(sgc, out);
   hdr->type = type;
   header_setcolor(hdr, WHITE);

@@ -5,13 +5,17 @@
 #include <setjmp.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <threads.h>
 
 struct sgc;
 
 /* only first 36 bits are used */
 typedef uintptr_t sgc_ref;
 
-typedef size_t (*sgc_sizeof)(struct sgc*, sgc_ref);
+/* if `ref` != nullptr, return the total bytesize of the given allocation.
+ * if `ref` == nullptr, return the total bytesize of a new allocation,
+ *    where ctor params may point to provided userdata. */
+typedef size_t (*sgc_sizeof)(struct sgc*, sgc_ref, void const* ctor_params);
 typedef void (*sgc_visit)(struct sgc*, sgc_ref);
 typedef void (*sgc_root_visit)(struct sgc*, void*);
 typedef void (*sgc_cleanup)(struct sgc*, sgc_ref);
@@ -47,7 +51,6 @@ struct sgc
   size_t gl_max;
 
   enum sgc_state state;
-
   jmp_buf oom_leave;
 };
 
@@ -76,7 +79,7 @@ sgc_uninit(struct sgc*);
  * returns NULLREF if there is not enough space for the allocation.
  * does not invoke sgc_collect. */
 sgc_ref
-sgc_alloc(struct sgc*, struct sgc_type const*);
+sgc_alloc(struct sgc*, struct sgc_type const*, void const* ctor_params);
 
 [[gnu::hot]]
 void*

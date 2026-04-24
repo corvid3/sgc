@@ -3,7 +3,7 @@ version = "0.4.0-alpha"
 type = "library"
 
 [project]
-version = "0.1.0"
+version = "0.2.0"
 org = "crow"
 name = "sgc"
 description = "PUT YOUR DESCRIPTION HERE!"
