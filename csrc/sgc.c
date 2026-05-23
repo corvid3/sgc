@@ -16,7 +16,7 @@ enum sgc_state : uint32_t
 
 struct header
 {
-  struct sgc_type const* type;
+  sgc_ref type;
   uintptr_t mark;
 };
 
@@ -30,6 +30,7 @@ enum : uintptr_t
 {
   COLOR_OFF = 63UL,
   COLOR_MASK = 1UL << COLOR_OFF,
+  TYPEALLOC = 1UL << 63UL,
 };
 
 [[gnu::const]]
@@ -82,6 +83,12 @@ header_setfwd(struct header* hdr, sgc_ref const ref)
   hdr->mark |= ref & SGC_REF_MASK;
 }
 
+static int
+is_typealloc(struct header const* restrict hdr)
+{
+  return (int)(hdr->type & TYPEALLOC);
+}
+
 #define min(x, y) (x) < (y) ? (x) : (y)
 #define max(x, y) (x) > (y) ? (x) : (y)
 
@@ -130,7 +137,67 @@ get_header(struct sgc* sgc, sgc_ref const what)
 struct sgc_type const*
 sgc_resolve_type(struct sgc* sgc, sgc_ref const ref)
 {
-  return get_header(sgc, ref)->type;
+  sgc_ref const typeref = get_header(sgc, ref)->type;
+  if (typeref == SGC_NULLREF)
+    return 0;
+  return sgc_resolve(sgc, typeref);
+}
+
+static inline sgc_cleanup
+get_cleanup(struct sgc* sgc, struct header* hdr)
+{
+  if (is_typealloc(hdr))
+    return 0;
+  return ((struct sgc_type const*)sgc_resolve(sgc, hdr->type))->cleanup;
+}
+
+static inline sgc_visit
+get_visit(struct sgc* sgc, struct header* hdr)
+{
+  if (is_typealloc(hdr))
+    return 0;
+  return ((struct sgc_type const*)sgc_resolve(sgc, hdr->type))->visit;
+}
+
+static inline sgc_sizeof
+get_sizeof(struct sgc* sgc, struct header* hdr)
+{
+  if (is_typealloc(hdr))
+    return 0;
+  return ((struct sgc_type const*)sgc_resolve(sgc, hdr->type))->size;
+}
+
+static inline size_t
+get_size(struct sgc* sgc, sgc_ref const ref, void const* ctor)
+{
+  struct header* hdr = get_header(sgc, ref);
+  if (is_typealloc(hdr)) {
+    return sizeof(struct sgc_type) + (hdr->type & 0xFFFFU);
+  }
+
+  return get_sizeof(sgc, hdr)(sgc, ref, ctor);
+}
+
+static void
+try_cleanup(struct sgc* sgc, sgc_ref ref)
+{
+  sgc_cleanup const cleanup = get_cleanup(sgc, get_header(sgc, ref));
+  if (cleanup)
+    cleanup(sgc, ref);
+}
+
+static void
+try_visit(struct sgc* sgc, sgc_ref ref)
+{
+  if (is_typealloc(get_header(sgc, ref))) {
+    struct sgc_type const* type = sgc_resolve(sgc, ref);
+    if (type->static_visit)
+      type->static_visit(sgc, ref);
+  } else {
+    sgc_visit const visit = get_visit(sgc, get_header(sgc, ref));
+    if (visit)
+      visit(sgc, ref);
+  }
 }
 
 static void
@@ -139,11 +206,8 @@ cleanupall(struct sgc* sgc)
   sgc_ref ref = sizeof(struct header);
 
   while (ref < sgc->bump) {
-    struct header* hdr = get_header(sgc, ref);
-    if (hdr->type->cleanup)
-      hdr->type->cleanup(sgc, ref);
-    ref += align(hdr->type->size(sgc, ref, 0), SGC_ALIGNMENT) +
-           sizeof(struct header);
+    try_cleanup(sgc, ref);
+    ref += align(get_size(sgc, ref, 0), SGC_ALIGNMENT) + sizeof(struct header);
   }
 }
 
@@ -232,7 +296,7 @@ static size_t
 slide(struct sgc* sgc, sgc_ref ref)
 {
   struct header* hdr = get_header(sgc, ref);
-  size_t const allocsize = hdr->type->size(sgc, ref, 0);
+  size_t const allocsize = get_size(sgc, ref, 0);
 
   if (header_color(hdr) == BLACK) {
     sgc_ref const fwd = header_fwd(hdr);
@@ -243,8 +307,9 @@ slide(struct sgc* sgc, sgc_ref ref)
                       sgc->heap + ref - sizeof(struct header),
                       allocsize + sizeof(struct header));
   } else {
-    if (hdr->type->cleanup)
-      hdr->type->cleanup(sgc, ref);
+    sgc_cleanup cleanup = get_cleanup(sgc, hdr);
+    if (cleanup)
+      cleanup(sgc, ref);
   }
 
   return align(ref + allocsize, SGC_ALIGNMENT) + sizeof(struct header);
@@ -262,7 +327,7 @@ static sgc_ref
 compactref(struct sgc* sgc, sgc_ref ref)
 {
   struct header* hdr = get_header(sgc, ref);
-  size_t const allocsize = hdr->type->size(sgc, ref, 0);
+  size_t const allocsize = get_size(sgc, ref, 0);
 
   if (header_color(hdr) == BLACK) {
     header_setcolor(hdr, WHITE);
@@ -270,8 +335,7 @@ compactref(struct sgc* sgc, sgc_ref ref)
       allocspace(sgc, sgc_resolve_type(sgc, ref)->size(sgc, ref, 0));
     header_setfwd(hdr, newspace);
   } else {
-    if (hdr->type->cleanup)
-      hdr->type->cleanup(sgc, ref);
+    try_cleanup(sgc, ref);
   }
 
   return align(ref + allocsize, SGC_ALIGNMENT) + sizeof(struct header);
@@ -289,10 +353,8 @@ static void
 traverse(struct sgc* sgc)
 {
   sgc->root_visit(sgc, sgc->root);
-  while (sgc->gl_len > 0) {
-    sgc_ref const ref = gl_pop(sgc);
-    sgc_resolve_type(sgc, ref)->visit(sgc, ref);
-  }
+  while (sgc->gl_len > 0)
+    try_visit(sgc, gl_pop(sgc));
 }
 
 static void
@@ -331,17 +393,32 @@ sgc_collect(struct sgc* sgc)
 }
 
 sgc_ref
-sgc_alloc(struct sgc* restrict sgc,
-          struct sgc_type const* restrict const type,
-          void const* ctor_params)
+sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
 {
-  size_t const size = type->size(sgc, SGC_NULLREF, ctor_params);
+  struct sgc_type const* type_ = sgc_resolve(sgc, type);
+  size_t const size = type_->size(sgc, SGC_NULLREF, ctor_params);
   sgc_ref const out = allocspace(sgc, size);
   if (out == SGC_NULLREF)
     return SGC_NULLREF;
 
   struct header* hdr = get_header(sgc, out);
   hdr->type = type;
+  header_setcolor(hdr, WHITE);
+  header_setfwd(hdr, SGC_NULLREF);
+  return out;
+}
+
+sgc_ref
+sgc_alloc_type(struct sgc* restrict sgc, size_t const extra)
+{
+  size_t const size = sizeof(struct sgc_type) + extra;
+  sgc_ref const out = allocspace(sgc, size);
+
+  if (out == SGC_NULLREF)
+    return SGC_NULLREF;
+
+  struct header* hdr = get_header(sgc, out);
+  hdr->type = 0;
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
   return out;
