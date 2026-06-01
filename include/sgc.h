@@ -85,10 +85,10 @@ sgc_ref
 sgc_alloc(struct sgc*, sgc_ref type, void const* ctor_params);
 
 /* allocates space in the managed heap for a type definition
- * passing a positive value to `extra` will allocate that many
- * extra bytes past the `struct sgc_type` allocation */
+ * `size` is the size of the allocation, which is
+ * MAX(...)'d to sizeof(struct sgc_type) */
 sgc_ref
-sgc_alloc_type(struct sgc*, size_t extra);
+sgc_alloc_type(struct sgc*, size_t size);
 
 [[gnu::hot]]
 void*

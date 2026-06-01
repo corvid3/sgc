@@ -409,9 +409,10 @@ sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
 }
 
 sgc_ref
-sgc_alloc_type(struct sgc* restrict sgc, size_t const extra)
+sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
 {
-  size_t const size = sizeof(struct sgc_type) + extra;
+
+  size_t const size = max(sizeof(struct sgc_type), size_);
   sgc_ref const out = allocspace(sgc, size);
 
   if (out == SGC_NULLREF)
