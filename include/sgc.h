@@ -22,7 +22,14 @@ typedef void (*sgc_cleanup)(struct sgc*, sgc_ref);
 
 struct sgc_type
 {
-  sgc_sizeof size;
+  union
+  {
+    sgc_sizeof size;
+
+    /* do not assign directly, assign to w/ sgc_static_size macro */
+    uintptr_t static_size;
+  };
+
   sgc_visit visit;
 
   /* nullable
