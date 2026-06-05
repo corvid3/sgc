@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <setjmp.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <sys/sysinfo.h>
 #include <threads.h>
@@ -171,11 +172,15 @@ static inline size_t
 get_size(struct sgc* sgc, sgc_ref const ref, void const* ctor)
 {
   struct header* hdr = get_header(sgc, ref);
+
   if (is_typealloc(hdr)) {
     return sizeof(struct sgc_type) + (hdr->type & 0xFFFFU);
   }
 
-  return get_sizeof(sgc, hdr)(sgc, ref, ctor);
+  sgc_sizeof const sizeof_ = get_sizeof(sgc, hdr);
+  if ((uintptr_t)sizeof_ >= SGC_SIZEBIT)
+    return UINT32_MAX & (uintptr_t)sizeof_;
+  return sizeof_(sgc, ref, ctor);
 }
 
 static void

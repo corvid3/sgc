@@ -37,6 +37,8 @@ struct sgc_type
   sgc_cleanup cleanup;
 };
 
+#define sgc_static_size(in) (SGC_SIZEBIT | (uintptr_t)(in))
+
 enum sgc_state : uint32_t;
 
 struct sgc
@@ -66,6 +68,7 @@ enum : uintptr_t
   SGC_ALIGNMENT = 8,
   SGC_NULLREF = SGC_REF_MASK,
   SGC_GLINDEF = -1UL,
+  SGC_SIZEBIT = 1UL << 63UL,
 };
 
 /* @param gl_maxsize | set to SGC_GLINDEF to allow for indefinite resizing */
