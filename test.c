@@ -9,15 +9,6 @@ struct list
   sgc_ref cdr;
 };
 
-static size_t
-list_size(struct sgc* sgc, sgc_ref const ref, void const* ctor)
-{
-  (void)sgc;
-  (void)ref;
-  (void)ctor;
-  return sizeof(struct list);
-}
-
 static void
 list_visit(struct sgc* sgc, sgc_ref const ref)
 {
@@ -27,10 +18,10 @@ list_visit(struct sgc* sgc, sgc_ref const ref)
 }
 
 struct sgc_type const list_type = {
-  .size = (sgc_sizeof)list_size,
+  .static_size = sgc_static_size(sizeof(struct list)),
   .visit = (sgc_visit)list_visit,
   .cleanup = 0,
-  .userdata = 0,
+  .static_visit = 0,
 };
 
 enum
@@ -42,11 +33,23 @@ enum
 struct root
 {
   sgc_ref list_head;
+  sgc_ref list_type;
+
   sgc_ref* roots[MAX_ROOTS];
   sgc_ref frames[MAX_FRAMES];
   unsigned rootidx;
   unsigned frameidx;
 };
+
+static void
+introduce_type(struct root* root, struct sgc* sgc)
+{
+  sgc_ref type = sgc_alloc_type(sgc, 0);
+  struct sgc_type* type_alloc = sgc_resolve(sgc, type);
+  *type_alloc = list_type;
+
+  root->list_type = type;
+}
 
 static void
 addroot(struct root* root, sgc_ref* ref)
@@ -74,13 +77,14 @@ pushframe(struct root* root)
 static void
 root_visit(struct sgc* sgc, struct root* root)
 {
+  sgc_mark(sgc, &root->list_type);
   sgc_mark(sgc, &root->list_head);
 }
 
 static sgc_ref
-cons(struct sgc* sgc, int car, sgc_ref cdr)
+cons(struct root* root, struct sgc* sgc, int car, sgc_ref cdr)
 {
-  sgc_ref const list_ref = sgc_alloc(sgc, &list_type, 0);
+  sgc_ref const list_ref = sgc_alloc(sgc, root->list_type, 0);
   if (list_ref == SGC_NULLREF)
     return SGC_NULLREF;
   struct list* list = sgc_resolve(sgc, list_ref);
@@ -98,13 +102,16 @@ alloc_list(struct sgc* sgc, struct root* root)
   };
 
   pushframe(root);
-  sgc_ref list = cons(sgc, rand(), SGC_NULLREF);
+  sgc_ref list = cons(root, sgc, rand(), SGC_NULLREF);
   addroot(root, &list);
 
   for (unsigned i = 0; i < iterations; i++) {
-    sgc_ref const new = cons(sgc, rand(), list);
-    if (new == SGC_NULLREF)
+    sgc_ref const new = cons(root, sgc, rand(), list);
+    if (new == SGC_NULLREF) {
+      // printf("breaking @ %i\n", i);
       break;
+    }
+
     list = new;
   }
 
@@ -160,6 +167,7 @@ main()
   root.list_head = SGC_NULLREF;
 
   struct sgc sgc = sgc_init(heapsize, -1, &root, (sgc_root_visit)root_visit);
+  introduce_type(&root, &sgc);
 
   alloc_list(&sgc, &root);
   root.list_head = alloc_list(&sgc, &root);

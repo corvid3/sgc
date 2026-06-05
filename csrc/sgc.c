@@ -31,7 +31,6 @@ enum : uintptr_t
 {
   COLOR_OFF = 63UL,
   COLOR_MASK = 1UL << COLOR_OFF,
-  TYPEALLOC = 1UL << 63UL,
 };
 
 [[gnu::const]]
@@ -87,7 +86,7 @@ header_setfwd(struct header* hdr, sgc_ref const ref)
 static int
 is_typealloc(struct header const* restrict hdr)
 {
-  return (int)(hdr->type & TYPEALLOC);
+  return hdr->type == SGC_NULLREF;
 }
 
 #define min(x, y) (x) < (y) ? (x) : (y)
@@ -178,6 +177,7 @@ get_size(struct sgc* sgc, sgc_ref const ref, void const* ctor)
   }
 
   sgc_sizeof const sizeof_ = get_sizeof(sgc, hdr);
+  assert(sizeof_ != 0);
   if ((uintptr_t)sizeof_ >= SGC_SIZEBIT)
     return UINT32_MAX & (uintptr_t)sizeof_;
   return sizeof_(sgc, ref, ctor);
@@ -203,6 +203,8 @@ try_visit(struct sgc* sgc, sgc_ref ref)
     if (visit)
       visit(sgc, ref);
   }
+
+  sgc_mark(sgc, &get_header(sgc, ref)->type);
 }
 
 static void
@@ -336,8 +338,7 @@ compactref(struct sgc* sgc, sgc_ref ref)
 
   if (header_color(hdr) == BLACK) {
     header_setcolor(hdr, WHITE);
-    sgc_ref const newspace =
-      allocspace(sgc, sgc_resolve_type(sgc, ref)->size(sgc, ref, 0));
+    sgc_ref const newspace = allocspace(sgc, get_size(sgc, ref, 0));
     header_setfwd(hdr, newspace);
   } else {
     try_cleanup(sgc, ref);
@@ -401,7 +402,11 @@ sgc_ref
 sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
 {
   struct sgc_type const* type_ = sgc_resolve(sgc, type);
-  size_t const size = type_->size(sgc, SGC_NULLREF, ctor_params);
+  size_t size = 0;
+  if ((uintptr_t)type_->size >= UINT32_MAX)
+    size = type_->static_size & UINT32_MAX;
+  else
+    size = type_->size(sgc, SGC_NULLREF, ctor_params);
   sgc_ref const out = allocspace(sgc, size);
   if (out == SGC_NULLREF)
     return SGC_NULLREF;
@@ -424,7 +429,7 @@ sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
     return SGC_NULLREF;
 
   struct header* hdr = get_header(sgc, out);
-  hdr->type = 0;
+  hdr->type = SGC_NULLREF;
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
   return out;

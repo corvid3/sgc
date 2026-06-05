@@ -1,6 +1,11 @@
 #pragma once
 
 /* simple compacting garbage collector */
+/* uses the LISP-2 garbage collecting algorithm,
+ * which traveses the heap three times using fwding pointers. */
+
+/* nullptrs = 0 is a valid assumption to make, as no allocation
+ * will return the value 0 */
 
 #include <setjmp.h>
 #include <stddef.h>
