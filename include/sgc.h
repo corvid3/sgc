@@ -105,11 +105,11 @@ sgc_alloc(struct sgc*, sgc_ref type, void const* ctor_params);
 sgc_ref
 sgc_alloc_type(struct sgc*, size_t size);
 
-[[gnu::hot]]
+[[gnu::const, gnu::hot]]
 void*
-sgc_resolve(struct sgc*, sgc_ref);
+sgc_resolve(struct sgc const*, sgc_ref);
 
-[[gnu::hot]]
+[[gnu::const, gnu::hot]]
 struct sgc_type const*
 sgc_resolve_type(struct sgc*, sgc_ref);
 

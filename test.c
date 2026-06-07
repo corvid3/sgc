@@ -98,7 +98,7 @@ alloc_list(struct sgc* sgc, struct root* root)
 {
   enum
   {
-    iterations = 512000
+    iterations = 5120000
   };
 
   pushframe(root);
@@ -158,7 +158,7 @@ main()
   enum
   {
     mibi = 1024 * 1024,
-    heapsize = mibi * 64,
+    heapsize = mibi * 256,
   };
 
   struct root root;

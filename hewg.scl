@@ -19,7 +19,7 @@ std = 23
 sources = { }
 
 [c]
-flags = { "-Wall" "-Wextra" "-Werror" }
+flags = { "-Wall" "-Wextra" "-Werror" "-g" }
 std = 17
 sources = {
 	"sgc.c"
