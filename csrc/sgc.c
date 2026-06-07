@@ -55,9 +55,9 @@ alignheap(struct sgc* sgc)
 
 [[gnu::hot, gnu::always_inline, gnu::const]]
 static inline enum color
-header_color(struct header const* hdr)
+header_color(struct header const hdr)
 {
-  return (hdr->mark & COLOR_MASK) >> COLOR_OFF;
+  return (hdr.mark & COLOR_MASK) >> COLOR_OFF;
 }
 
 [[gnu::hot, gnu::always_inline]]
@@ -68,25 +68,34 @@ header_setcolor(struct header* restrict hdr, enum color const color)
   hdr->mark |= (uintptr_t)color << COLOR_OFF;
 }
 
+#define SETCOL(in, col)                                                        \
+  (in).mark &= SGC_REF_MASK;                                                   \
+  (in).mark |= (uintptr_t)(col) << COLOR_OFF;
+#define GETCOL(in) ((in).mark & COLOR_MASK) >> COLOR_OFF
+#define SETFWD(in, fwd)                                                        \
+  (in).mark &= ~SGC_REF_MASK;                                                  \
+  (in).mark |= fwd & SGC_REF_MASK;
+#define GETFWD(in) ((in).mark & SGC_REF_MASK)
+
 [[gnu::hot, gnu::always_inline, gnu::const]]
 static inline sgc_ref
-header_fwd(struct header const* hdr)
+header_fwd(struct header const hdr)
 {
-  return (hdr->mark & SGC_REF_MASK);
+  return (hdr.mark & SGC_REF_MASK);
 }
 
 [[gnu::hot, gnu::always_inline]]
 static inline void
-header_setfwd(struct header* hdr, sgc_ref const ref)
+header_setfwd(struct header* restrict hdr, sgc_ref const ref)
 {
   hdr->mark &= ~SGC_REF_MASK;
   hdr->mark |= ref & SGC_REF_MASK;
 }
 
 static int
-is_typealloc(struct header const* restrict hdr)
+is_typealloc(struct header const hdr)
 {
-  return hdr->type == SGC_NULLREF;
+  return hdr.type == SGC_NULLREF;
 }
 
 #define min(x, y) (x) < (y) ? (x) : (y)
@@ -146,36 +155,36 @@ sgc_resolve_type(struct sgc* sgc, sgc_ref const ref)
 
 [[gnu::hot]]
 static inline sgc_cleanup
-get_cleanup(struct sgc* sgc, struct header const* restrict hdr)
+get_cleanup(struct sgc* sgc, struct header const hdr)
 {
   if (is_typealloc(hdr))
     return 0;
-  return ((struct sgc_type const*)sgc_resolve(sgc, hdr->type))->cleanup;
+  return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->cleanup;
 }
 
 [[gnu::hot]]
 static inline sgc_visit
-get_visit(struct sgc* sgc, struct header* hdr)
+get_visit(struct sgc* sgc, struct header const hdr)
 {
   if (is_typealloc(hdr))
     return 0;
-  return ((struct sgc_type const*)sgc_resolve(sgc, hdr->type))->visit;
+  return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->visit;
 }
 
 [[gnu::hot]]
 static inline sgc_sizeof
-get_sizeof(struct sgc const* restrict sgc, struct header const* restrict hdr)
+get_sizeof(struct sgc const* restrict sgc, struct header const hdr)
 {
   if (is_typealloc(hdr))
     return 0;
-  return ((struct sgc_type const*)sgc_resolve(sgc, hdr->type))->size;
+  return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->size;
 }
 
 [[gnu::hot]]
 static inline size_t
 get_size(struct sgc* sgc,
          sgc_ref const ref,
-         struct header const* restrict hdr,
+         struct header const hdr,
          void const* ctor)
 {
   enum : unsigned
@@ -184,7 +193,7 @@ get_size(struct sgc* sgc,
   };
 
   if (is_typealloc(hdr))
-    return sizeof(struct sgc_type) + (hdr->type & typesize_mask);
+    return sizeof(struct sgc_type) + (hdr.type & typesize_mask);
 
   sgc_sizeof const sizeof_ = get_sizeof(sgc, hdr);
   assert(sizeof_ != 0);
@@ -194,27 +203,42 @@ get_size(struct sgc* sgc,
 }
 
 static void
-try_cleanup(struct sgc* sgc, struct header const* restrict hdr, sgc_ref ref)
+try_cleanup(struct sgc* sgc, struct header const hdr, sgc_ref ref)
 {
   sgc_cleanup const cleanup = get_cleanup(sgc, hdr);
   if (cleanup)
     cleanup(sgc, ref);
 }
 
+#define hdr_prefetch(hdr)                                                      \
+  do {                                                                         \
+    __builtin_prefetch(((void*)(hdr)), 1, 3);                                  \
+    __builtin_prefetch(((void*)(hdr)) + 8, 1, 3);                              \
+  } while (0)
+
 static void
 try_visit(struct sgc* sgc, sgc_ref ref)
 {
-  if (is_typealloc(get_header(sgc, ref))) {
+  struct header const* restrict hdr_ptr = get_header(sgc, ref);
+  struct header const hdr = *hdr_ptr;
+
+  if (is_typealloc(hdr)) {
     struct sgc_type const* type = sgc_resolve(sgc, ref);
     if (type->static_visit)
       type->static_visit(sgc, ref);
   } else {
-    sgc_visit const visit = get_visit(sgc, get_header(sgc, ref));
+    sgc_visit const visit = get_visit(sgc, hdr);
     if (visit)
       visit(sgc, ref);
   }
 
   sgc_mark(sgc, &get_header(sgc, ref)->type);
+}
+
+static inline size_t
+next_hdr(size_t const size, sgc_ref const ref)
+{
+  return align(ref + size, SGC_ALIGNMENT) + sizeof(struct header);
 }
 
 static void
@@ -223,10 +247,11 @@ cleanupall(struct sgc* sgc)
   sgc_ref ref = sizeof(struct header);
 
   while (ref < sgc->bump) {
-    struct header const* restrict hdr = get_header(sgc, ref);
+    struct header const hdr = *get_header(sgc, ref);
+    size_t const size = get_size(sgc, ref, hdr, 0);
+    hdr_prefetch(sgc_resolve(sgc, next_hdr(size, ref)));
     try_cleanup(sgc, hdr, ref);
-    ref +=
-      align(get_size(sgc, ref, hdr, 0), SGC_ALIGNMENT) + sizeof(struct header);
+    ref = next_hdr(size, ref);
   }
 }
 
@@ -291,13 +316,7 @@ allocspace(struct sgc* sgc, size_t const size)
   return out;
 }
 
-#define hdr_prefetch(hdr)                                                      \
-  do {                                                                         \
-    __builtin_prefetch(((void*)(hdr)), 1, 3);                                  \
-    if (0)                                                                     \
-      __builtin_prefetch(((void*)(hdr)) + 8, 1, 3);                            \
-  } while (0)
-
+[[gnu::flatten]]
 void
 sgc_mark(struct sgc* sgc, sgc_ref* what)
 {
@@ -306,38 +325,38 @@ sgc_mark(struct sgc* sgc, sgc_ref* what)
   if (sgc->state == state_not_collecting)
     return;
 
-  struct header* restrict hdr = get_header(sgc, *what);
-  hdr_prefetch(hdr);
+  struct header* restrict hdr_ptr = get_header(sgc, *what);
+  hdr_prefetch(hdr_ptr);
+
+  struct header hdr = *hdr_ptr;
 
   enum color const color = header_color(hdr);
   if (color == BLACK)
     return;
 
-  header_setcolor(hdr, BLACK);
+  header_setcolor(&hdr, BLACK);
   gl_push(sgc, *what);
   if (sgc->state == state_update)
     *what = header_fwd(hdr);
-}
 
-static inline size_t
-next_hdr(size_t const size, sgc_ref const ref)
-{
-  return align(ref + size, SGC_ALIGNMENT) + sizeof(struct header);
+  *hdr_ptr = hdr;
 }
 
 /* returns the next allocation ref, or NULLREF */
+[[gnu::flatten]]
 static size_t
 slide(struct sgc* sgc, sgc_ref ref)
 {
-  struct header* hdr = get_header(sgc, ref);
-  hdr_prefetch(hdr);
+  struct header* hdr_ptr = get_header(sgc, ref);
+  register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
+  hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
   if (header_color(hdr) == BLACK) {
     sgc_ref const fwd = header_fwd(hdr);
-    header_setcolor(hdr, WHITE);
-    header_setfwd(hdr, SGC_NULLREF);
+    SETCOL(hdr, WHITE);
+    SETFWD(hdr, SGC_NULLREF);
 
     __builtin_memmove(sgc->heap + fwd - sizeof(struct header),
                       sgc->heap + ref - sizeof(struct header),
@@ -348,7 +367,7 @@ slide(struct sgc* sgc, sgc_ref ref)
       cleanup(sgc, ref);
   }
 
-  return align(ref + allocsize, SGC_ALIGNMENT) + sizeof(struct header);
+  return next_hdr(allocsize, ref);
 }
 
 static void
@@ -359,23 +378,26 @@ slideheap(struct sgc* sgc, uintptr_t const oldbump)
     begin = slide(sgc, begin);
 }
 
+[[gnu::flatten]]
 static sgc_ref
 compactref(struct sgc* sgc, sgc_ref ref)
 {
-  struct header* hdr = get_header(sgc, ref);
-  hdr_prefetch(hdr);
+  struct header* hdr_ptr = get_header(sgc, ref);
+  register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
+  hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
   if (header_color(hdr) == BLACK) {
-    header_setcolor(hdr, WHITE);
     sgc_ref const newspace = allocspace(sgc, get_size(sgc, ref, hdr, 0));
-    header_setfwd(hdr, newspace);
+    SETCOL(hdr, WHITE);
+    SETFWD(hdr, newspace);
   } else {
     try_cleanup(sgc, hdr, ref);
   }
 
-  return align(ref + allocsize, SGC_ALIGNMENT) + sizeof(struct header);
+  *hdr_ptr = hdr;
+  return next_hdr(allocsize, ref);
 }
 
 static void
@@ -411,6 +433,7 @@ update(struct sgc* sgc)
 }
 
 /* forces a collection */
+[[gnu::flatten]]
 int
 sgc_collect(struct sgc* sgc)
 {
