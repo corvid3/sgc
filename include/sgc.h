@@ -20,7 +20,9 @@ typedef uintptr_t sgc_ref;
 /* if `ref` != nullptr, return the total bytesize of the given allocation.
  * if `ref` == nullptr, return the total bytesize of a new allocation,
  *    where ctor params may point to provided userdata. */
-typedef size_t (*sgc_sizeof)(struct sgc*, sgc_ref, void const* ctor_params);
+typedef size_t (*sgc_sizeof)(struct sgc const*,
+                             sgc_ref,
+                             void const* ctor_params);
 typedef void (*sgc_visit)(struct sgc*, sgc_ref);
 typedef void (*sgc_root_visit)(struct sgc*, void*);
 typedef void (*sgc_cleanup)(struct sgc*, sgc_ref);
@@ -113,6 +115,7 @@ sgc_resolve(struct sgc const*, sgc_ref);
 struct sgc_type const*
 sgc_resolve_type(struct sgc*, sgc_ref);
 
+[[gnu::hot]]
 void
 sgc_mark(struct sgc*, sgc_ref*);
 
@@ -125,3 +128,6 @@ sgc_mark(struct sgc*, sgc_ref*);
  */
 int
 sgc_collect(struct sgc*);
+
+sgc_ref
+sgc_ptr_to_ref(struct sgc* const, void* const);

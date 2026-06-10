@@ -53,14 +53,14 @@ alignheap(struct sgc* sgc)
   sgc->bump += pad((uintptr_t)sgc->heap + sgc->bump, SGC_ALIGNMENT);
 }
 
-[[gnu::hot, gnu::always_inline, gnu::const]]
+[[gnu::hot, gnu::const]]
 static inline enum color
 header_color(struct header const hdr)
 {
   return (hdr.mark & COLOR_MASK) >> COLOR_OFF;
 }
 
-[[gnu::hot, gnu::always_inline]]
+[[gnu::hot]]
 static inline void
 header_setcolor(struct header* restrict hdr, enum color const color)
 {
@@ -74,28 +74,23 @@ header_setcolor(struct header* restrict hdr, enum color const color)
 #define GETCOL(in) ((in).mark & COLOR_MASK) >> COLOR_OFF
 #define SETFWD(in, fwd)                                                        \
   (in).mark &= ~SGC_REF_MASK;                                                  \
-  (in).mark |= fwd & SGC_REF_MASK;
+  (in).mark |= (fwd) & SGC_REF_MASK;
 #define GETFWD(in) ((in).mark & SGC_REF_MASK)
+#define IS_TYPEALLOC(in) ((in).type == SGC_NULLREF)
 
-[[gnu::hot, gnu::always_inline, gnu::const]]
+[[gnu::hot, gnu::const]]
 static inline sgc_ref
 header_fwd(struct header const hdr)
 {
   return (hdr.mark & SGC_REF_MASK);
 }
 
-[[gnu::hot, gnu::always_inline]]
+[[gnu::hot]]
 static inline void
 header_setfwd(struct header* restrict hdr, sgc_ref const ref)
 {
   hdr->mark &= ~SGC_REF_MASK;
   hdr->mark |= ref & SGC_REF_MASK;
-}
-
-static int
-is_typealloc(struct header const hdr)
-{
-  return hdr.type == SGC_NULLREF;
 }
 
 #define min(x, y) (x) < (y) ? (x) : (y)
@@ -129,21 +124,22 @@ sgc_init(size_t heap_size,
   return out;
 }
 
-[[gnu::always_inline]]
 inline void*
 sgc_resolve(struct sgc const* sgc, sgc_ref const ref)
 {
   return sgc->heap + (ref & SGC_REF_MASK);
 }
 
-[[gnu::const, gnu::hot, gnu::always_inline]]
+[[gnu::const, gnu::hot]]
 static inline struct header*
 get_header(struct sgc* sgc, sgc_ref const what)
 {
   return sgc_resolve(sgc, what - sizeof(struct header));
 }
 
-[[gnu::always_inline]]
+#define likely(exp) __builtin_expect(!!(exp), 1)
+#define unlikely(exp) __builtin_expect(!!(exp), 0)
+
 inline struct sgc_type const*
 sgc_resolve_type(struct sgc* sgc, sgc_ref const ref)
 {
@@ -153,36 +149,36 @@ sgc_resolve_type(struct sgc* sgc, sgc_ref const ref)
   return sgc_resolve(sgc, typeref);
 }
 
-[[gnu::hot]]
+[[gnu::hot, gnu::const]]
 static inline sgc_cleanup
-get_cleanup(struct sgc* sgc, struct header const hdr)
+get_cleanup(struct sgc const* sgc, struct header const hdr)
 {
-  if (is_typealloc(hdr))
+  if (unlikely(IS_TYPEALLOC(hdr)))
     return 0;
   return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->cleanup;
 }
 
-[[gnu::hot]]
+[[gnu::hot, gnu::const]]
 static inline sgc_visit
-get_visit(struct sgc* sgc, struct header const hdr)
+get_visit(struct sgc const* sgc, struct header const hdr)
 {
-  if (is_typealloc(hdr))
+  if (unlikely(IS_TYPEALLOC(hdr)))
     return 0;
   return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->visit;
 }
 
-[[gnu::hot]]
+[[gnu::hot, gnu::const]]
 static inline sgc_sizeof
 get_sizeof(struct sgc const* restrict sgc, struct header const hdr)
 {
-  if (is_typealloc(hdr))
+  if (unlikely(IS_TYPEALLOC(hdr)))
     return 0;
   return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->size;
 }
 
-[[gnu::hot]]
+[[gnu::hot, gnu::const]]
 static inline size_t
-get_size(struct sgc* sgc,
+get_size(struct sgc const* restrict sgc,
          sgc_ref const ref,
          struct header const hdr,
          void const* ctor)
@@ -192,43 +188,44 @@ get_size(struct sgc* sgc,
     typesize_mask = 0xFFFFU,
   };
 
-  if (is_typealloc(hdr))
+  if (unlikely(IS_TYPEALLOC(hdr)))
     return sizeof(struct sgc_type) + (hdr.type & typesize_mask);
 
   sgc_sizeof const sizeof_ = get_sizeof(sgc, hdr);
   assert(sizeof_ != 0);
-  if ((uintptr_t)sizeof_ & SGC_SIZEBIT)
+  if (unlikely((uintptr_t)sizeof_ & SGC_SIZEBIT))
     return UINT32_MAX & (uintptr_t)sizeof_;
   return sizeof_(sgc, ref, ctor);
 }
 
 static void
-try_cleanup(struct sgc* sgc, struct header const hdr, sgc_ref ref)
+try_cleanup(struct sgc* restrict sgc, struct header const hdr, sgc_ref ref)
 {
   sgc_cleanup const cleanup = get_cleanup(sgc, hdr);
-  if (cleanup)
+  if (unlikely(cleanup))
     cleanup(sgc, ref);
 }
 
 #define hdr_prefetch(hdr)                                                      \
   do {                                                                         \
     __builtin_prefetch(((void*)(hdr)), 1, 3);                                  \
-    __builtin_prefetch(((void*)(hdr)) + 8, 1, 3);                              \
+    if (0)                                                                     \
+      __builtin_prefetch(((void*)(hdr)) + 8, 1, 3);                            \
   } while (0)
 
 static void
-try_visit(struct sgc* sgc, sgc_ref ref)
+try_visit(struct sgc* restrict sgc, sgc_ref ref)
 {
   struct header const* restrict hdr_ptr = get_header(sgc, ref);
   struct header const hdr = *hdr_ptr;
 
-  if (is_typealloc(hdr)) {
+  if (unlikely(IS_TYPEALLOC(hdr))) {
     struct sgc_type const* type = sgc_resolve(sgc, ref);
     if (type->static_visit)
       type->static_visit(sgc, ref);
   } else {
     sgc_visit const visit = get_visit(sgc, hdr);
-    if (visit)
+    if (likely(visit))
       visit(sgc, ref);
   }
 
@@ -268,20 +265,21 @@ sgc_uninit(struct sgc* sgc)
 static void
 gl_ensure(struct sgc* restrict sgc)
 {
-  if (sgc->gl_len + 1 < sgc->gl_cap)
+  if (likely(sgc->gl_len + 1 < sgc->gl_cap))
     return;
-  if (sgc->gl_cap == sgc->gl_max)
+  if (unlikely(sgc->gl_cap == sgc->gl_max))
     longjmp(sgc->oom_leave, 0);
   sgc->gl_cap = min(sgc->gl_cap * 2, sgc->gl_max);
   void* new_array = realloc(sgc->gl, sgc->gl_cap * sizeof(size_t));
-  if (!new_array)
+  if (unlikely(!new_array))
     longjmp(sgc->oom_leave, 0);
   sgc->gl = new_array;
 }
 
-static void
+static inline void
 gl_push(struct sgc* restrict sgc, sgc_ref const what)
 {
+  __builtin_prefetch(&sgc->gl[sgc->gl_len], 1, 0);
   gl_ensure(sgc);
   sgc->gl[sgc->gl_len++] = what;
 }
@@ -307,7 +305,7 @@ allocspace(struct sgc* sgc, size_t const size)
   alignheap(sgc);
   uintptr_t const consumption = size + sizeof(struct header);
 
-  if (consumption >= freespace(sgc))
+  if (unlikely(consumption >= freespace(sgc)))
     return SGC_NULLREF;
 
   sgc->bump += sizeof(struct header);
@@ -320,26 +318,30 @@ allocspace(struct sgc* sgc, size_t const size)
 void
 sgc_mark(struct sgc* sgc, sgc_ref* what)
 {
-  if (*what == SGC_NULLREF)
-    return;
-  if (sgc->state == state_not_collecting)
-    return;
-
   struct header* restrict hdr_ptr = get_header(sgc, *what);
-  hdr_prefetch(hdr_ptr);
+  __builtin_prefetch(hdr_ptr, 1, 3);
+  // hdr_prefetch(hdr_ptr);
 
+  if (unlikely(*what == SGC_NULLREF))
+    return;
+  if (unlikely(sgc->state == state_not_collecting))
+    return;
+
+  // struct header* restrict hdr_ptr = get_header(sgc, *what);
+  // hdr_prefetch(hdr_ptr);
+  hdr_prefetch(sgc_resolve(sgc, hdr_ptr->type));
   struct header hdr = *hdr_ptr;
 
-  enum color const color = header_color(hdr);
+  enum color const color = GETCOL(hdr);
   if (color == BLACK)
     return;
 
-  header_setcolor(&hdr, BLACK);
+  SETCOL(hdr, BLACK);
   gl_push(sgc, *what);
-  if (sgc->state == state_update)
-    *what = header_fwd(hdr);
-
+  __builtin_prefetch(what, 0, 1);
   *hdr_ptr = hdr;
+  if (sgc->state == state_update)
+    *what = GETFWD(hdr);
 }
 
 /* returns the next allocation ref, or NULLREF */
@@ -348,13 +350,15 @@ static size_t
 slide(struct sgc* sgc, sgc_ref ref)
 {
   struct header* hdr_ptr = get_header(sgc, ref);
+  hdr_prefetch(hdr_ptr);
+  hdr_prefetch(sgc_resolve(sgc, hdr_ptr->type));
   register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
-  hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
+  // hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
-  if (header_color(hdr) == BLACK) {
-    sgc_ref const fwd = header_fwd(hdr);
+  if (unlikely(GETCOL(hdr) == BLACK)) {
+    sgc_ref const fwd = GETFWD(hdr);
     SETCOL(hdr, WHITE);
     SETFWD(hdr, SGC_NULLREF);
 
@@ -362,9 +366,7 @@ slide(struct sgc* sgc, sgc_ref ref)
                       sgc->heap + ref - sizeof(struct header),
                       allocsize + sizeof(struct header));
   } else {
-    sgc_cleanup cleanup = get_cleanup(sgc, hdr);
-    if (cleanup)
-      cleanup(sgc, ref);
+    try_cleanup(sgc, hdr, ref);
   }
 
   return next_hdr(allocsize, ref);
@@ -380,15 +382,17 @@ slideheap(struct sgc* sgc, uintptr_t const oldbump)
 
 [[gnu::flatten]]
 static sgc_ref
-compactref(struct sgc* sgc, sgc_ref ref)
+compactref(struct sgc* sgc, sgc_ref const ref)
 {
   struct header* hdr_ptr = get_header(sgc, ref);
+  hdr_prefetch(hdr_ptr);
+  hdr_prefetch(sgc_resolve(sgc, hdr_ptr->type));
   register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
-  hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
+  // hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
-  if (header_color(hdr) == BLACK) {
+  if (unlikely(GETCOL(hdr) == BLACK)) {
     sgc_ref const newspace = allocspace(sgc, get_size(sgc, ref, hdr, 0));
     SETCOL(hdr, WHITE);
     SETFWD(hdr, newspace);
@@ -452,26 +456,30 @@ sgc_collect(struct sgc* sgc)
   return 0;
 }
 
+[[gnu::flatten]]
 sgc_ref
 sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
 {
   struct sgc_type const* type_ = sgc_resolve(sgc, type);
+
   size_t size = 0;
   if ((uintptr_t)type_->size >= UINT32_MAX)
     size = type_->static_size & UINT32_MAX;
   else
     size = type_->size(sgc, SGC_NULLREF, ctor_params);
   sgc_ref const out = allocspace(sgc, size);
-  if (out == SGC_NULLREF)
+  if (unlikely(out == SGC_NULLREF))
     return SGC_NULLREF;
 
   struct header* hdr = get_header(sgc, out);
+
   hdr->type = type;
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
   return out;
 }
 
+[[gnu::flatten]]
 sgc_ref
 sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
 {
@@ -479,7 +487,7 @@ sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
   size_t const size = max(sizeof(struct sgc_type), size_);
   sgc_ref const out = allocspace(sgc, size);
 
-  if (out == SGC_NULLREF)
+  if (unlikely(out == SGC_NULLREF))
     return SGC_NULLREF;
 
   struct header* hdr = get_header(sgc, out);
@@ -487,4 +495,10 @@ sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
   return out;
+}
+
+sgc_ref
+sgc_ptr_to_ref(struct sgc* const sgc, void* const ptr)
+{
+  return ptr - sgc->heap;
 }
