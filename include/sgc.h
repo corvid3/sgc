@@ -112,7 +112,7 @@ void*
 sgc_resolve(struct sgc const*, sgc_ref);
 
 [[gnu::const, gnu::hot]]
-struct sgc_type const*
+sgc_ref
 sgc_resolve_type(struct sgc*, sgc_ref);
 
 [[gnu::hot]]

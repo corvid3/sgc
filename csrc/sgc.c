@@ -53,13 +53,6 @@ alignheap(struct sgc* sgc)
   sgc->bump += pad((uintptr_t)sgc->heap + sgc->bump, SGC_ALIGNMENT);
 }
 
-[[gnu::hot, gnu::const]]
-static inline enum color
-header_color(struct header const hdr)
-{
-  return (hdr.mark & COLOR_MASK) >> COLOR_OFF;
-}
-
 [[gnu::hot]]
 static inline void
 header_setcolor(struct header* restrict hdr, enum color const color)
@@ -77,13 +70,6 @@ header_setcolor(struct header* restrict hdr, enum color const color)
   (in).mark |= (fwd) & SGC_REF_MASK;
 #define GETFWD(in) ((in).mark & SGC_REF_MASK)
 #define IS_TYPEALLOC(in) ((in).type == SGC_NULLREF)
-
-[[gnu::hot, gnu::const]]
-static inline sgc_ref
-header_fwd(struct header const hdr)
-{
-  return (hdr.mark & SGC_REF_MASK);
-}
 
 [[gnu::hot]]
 static inline void
@@ -140,13 +126,13 @@ get_header(struct sgc* sgc, sgc_ref const what)
 #define likely(exp) __builtin_expect(!!(exp), 1)
 #define unlikely(exp) __builtin_expect(!!(exp), 0)
 
-inline struct sgc_type const*
+inline sgc_ref
 sgc_resolve_type(struct sgc* sgc, sgc_ref const ref)
 {
   sgc_ref const typeref = get_header(sgc, ref)->type;
   if (typeref == SGC_NULLREF)
     return 0;
-  return sgc_resolve(sgc, typeref);
+  return typeref;
 }
 
 [[gnu::hot, gnu::const]]
