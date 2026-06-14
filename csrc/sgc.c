@@ -449,7 +449,7 @@ sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
   struct sgc_type const* type_ = sgc_resolve(sgc, type);
 
   size_t size = 0;
-  if ((uintptr_t)type_->size >= UINT32_MAX)
+  if (type_->static_size & SGC_SIZEBIT)
     size = type_->static_size & UINT32_MAX;
   else
     size = type_->size(sgc, SGC_NULLREF, ctor_params);
