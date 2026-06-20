@@ -23,14 +23,24 @@ struct header
 
 enum color
 {
+  /* not marked
+   * allocations are set back to this value during slideheap */
   WHITE,
-  BLACK,
+
+  /* allocations marked during the state_mark pass
+   * follows white->gl->red path */
+  RED,
+
+  /* allocations marked during the state_mark pass
+   * follows red->gl->blue path */
+  BLUE,
 };
 
 enum : uintptr_t
 {
-  COLOR_OFF = 63UL,
-  COLOR_MASK = 1UL << COLOR_OFF,
+  COLOR_OFF = 62UL,
+  COLOR_MASK = ((1UL << 2UL) - 1UL) << COLOR_OFF,
+  TYPE_BIT = 1UL << 60UL,
 };
 
 [[gnu::const]]
@@ -69,7 +79,8 @@ header_setcolor(struct header* restrict hdr, enum color const color)
   (in).mark &= ~SGC_REF_MASK;                                                  \
   (in).mark |= (fwd) & SGC_REF_MASK;
 #define GETFWD(in) ((in).mark & SGC_REF_MASK)
-#define IS_TYPEALLOC(in) ((in).type == SGC_NULLREF)
+#define GETTY(in) ((in).type & SGC_REF_MASK)
+#define IS_TYPEALLOC(in) ((in).type & TYPE_BIT)
 
 [[gnu::hot]]
 static inline void
@@ -126,10 +137,10 @@ get_header(struct sgc* sgc, sgc_ref const what)
 #define likely(exp) __builtin_expect(!!(exp), 1)
 #define unlikely(exp) __builtin_expect(!!(exp), 0)
 
-inline sgc_ref
+sgc_ref
 sgc_resolve_type(struct sgc* sgc, sgc_ref const ref)
 {
-  sgc_ref const typeref = get_header(sgc, ref)->type;
+  sgc_ref const typeref = GETTY(*get_header(sgc, ref));
   if (typeref == SGC_NULLREF)
     return 0;
   return typeref;
@@ -141,7 +152,7 @@ get_cleanup(struct sgc const* sgc, struct header const hdr)
 {
   if (unlikely(IS_TYPEALLOC(hdr)))
     return 0;
-  return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->cleanup;
+  return ((struct sgc_type const*)sgc_resolve(sgc, GETTY(hdr)))->cleanup;
 }
 
 [[gnu::hot, gnu::const]]
@@ -150,7 +161,7 @@ get_visit(struct sgc const* sgc, struct header const hdr)
 {
   if (unlikely(IS_TYPEALLOC(hdr)))
     return 0;
-  return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->visit;
+  return ((struct sgc_type const*)sgc_resolve(sgc, GETTY(hdr)))->visit;
 }
 
 [[gnu::hot, gnu::const]]
@@ -159,7 +170,7 @@ get_sizeof(struct sgc const* restrict sgc, struct header const hdr)
 {
   if (unlikely(IS_TYPEALLOC(hdr)))
     return 0;
-  return ((struct sgc_type const*)sgc_resolve(sgc, hdr.type))->size;
+  return ((struct sgc_type const*)sgc_resolve(sgc, GETTY(hdr)))->size;
 }
 
 [[gnu::hot, gnu::const]]
@@ -213,15 +224,15 @@ try_visit(struct sgc* restrict sgc, sgc_ref ref)
     sgc_visit const visit = get_visit(sgc, hdr);
     if (likely(visit))
       visit(sgc, ref);
+    sgc_mark(sgc, &get_header(sgc, ref)->type);
   }
-
-  sgc_mark(sgc, &get_header(sgc, ref)->type);
 }
 
 static inline size_t
 next_hdr(size_t const size, sgc_ref const ref)
 {
-  return align(ref + size, SGC_ALIGNMENT) + sizeof(struct header);
+  return align((ref & SGC_REF_MASK) + size, SGC_ALIGNMENT) +
+         sizeof(struct header);
 }
 
 static void
@@ -306,28 +317,65 @@ sgc_mark(struct sgc* sgc, sgc_ref* what)
 {
   struct header* restrict hdr_ptr = get_header(sgc, *what);
   __builtin_prefetch(hdr_ptr, 1, 3);
-  // hdr_prefetch(hdr_ptr);
 
   if (unlikely(*what == SGC_NULLREF))
     return;
   if (unlikely(sgc->state == state_not_collecting))
     return;
 
-  // struct header* restrict hdr_ptr = get_header(sgc, *what);
-  // hdr_prefetch(hdr_ptr);
-  hdr_prefetch(sgc_resolve(sgc, hdr_ptr->type));
+  hdr_prefetch(sgc_resolve(sgc, GETTY(*hdr_ptr)));
   struct header hdr = *hdr_ptr;
 
   enum color const color = GETCOL(hdr);
-  if (color == BLACK)
+  if (sgc->state == state_mark) {
+    SETCOL(hdr, RED);
+  } else {
+    SETCOL(hdr, BLUE);
+  }
+
+  enum color const new_col = GETCOL(hdr);
+  if (color == new_col)
     return;
 
-  SETCOL(hdr, BLACK);
   gl_push(sgc, *what);
-  __builtin_prefetch(what, 0, 1);
   *hdr_ptr = hdr;
-  if (sgc->state == state_update)
-    *what = GETFWD(hdr);
+  if (sgc->state == state_update) {
+    *what &= SGC_REF_MASK;
+    *what |= GETFWD(hdr);
+  }
+}
+
+/* ahhh... i think i'll have to change the tricolor abstraction
+ * to a four color abstraction!
+ * white -> gray -> red/blue
+ * set white->gray->red during state_mark
+ * set red->gray->blue during state_update
+ * if a non-white reference is found during state_update,
+ * then the reference must be set to a NULLREF and return true */
+[[gnu::hot]] int
+sgc_mark_weak(struct sgc* sgc, sgc_ref* what)
+{
+  struct header* restrict hdr_ptr = get_header(sgc, *what);
+  __builtin_prefetch(hdr_ptr, 1, 3);
+
+  if (unlikely(*what == SGC_NULLREF))
+    return 0;
+  if (unlikely(sgc->state == state_not_collecting))
+    return 0;
+
+  hdr_prefetch(sgc_resolve(sgc, GETTY(*hdr_ptr)));
+  struct header hdr = *hdr_ptr;
+
+  enum color const color = GETCOL(hdr);
+  if (sgc->state == state_update) {
+    *what &= SGC_REF_MASK;
+    if (color == RED)
+      *what |= GETFWD(hdr);
+    else if (color == WHITE)
+      return *what |= SGC_NULLREF, 1;
+  }
+
+  return 0;
 }
 
 /* returns the next allocation ref, or NULLREF */
@@ -341,9 +389,8 @@ slide(struct sgc* sgc, sgc_ref ref)
   register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
-  // hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
-  if (unlikely(GETCOL(hdr) == BLACK)) {
+  if (unlikely(GETCOL(hdr) == BLUE)) {
     sgc_ref const fwd = GETFWD(hdr);
     SETCOL(hdr, WHITE);
     SETFWD(hdr, SGC_NULLREF);
@@ -372,15 +419,14 @@ compactref(struct sgc* sgc, sgc_ref const ref)
 {
   struct header* hdr_ptr = get_header(sgc, ref);
   hdr_prefetch(hdr_ptr);
-  hdr_prefetch(sgc_resolve(sgc, hdr_ptr->type));
+  hdr_prefetch(sgc_resolve(sgc, GETTY(*hdr_ptr)));
   register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
   // hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
-  if (unlikely(GETCOL(hdr) == BLACK)) {
-    sgc_ref const newspace = allocspace(sgc, get_size(sgc, ref, hdr, 0));
-    SETCOL(hdr, WHITE);
+  if (unlikely(GETCOL(hdr) == RED)) {
+    sgc_ref const newspace = allocspace(sgc, allocsize);
     SETFWD(hdr, newspace);
   } else {
     try_cleanup(sgc, hdr, ref);
@@ -477,7 +523,7 @@ sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
     return SGC_NULLREF;
 
   struct header* hdr = get_header(sgc, out);
-  hdr->type = SGC_NULLREF;
+  hdr->type = TYPE_BIT;
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
   return out;

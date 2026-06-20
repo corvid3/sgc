@@ -119,6 +119,10 @@ sgc_resolve_type(struct sgc*, sgc_ref);
 void
 sgc_mark(struct sgc*, sgc_ref*);
 
+/* returns 1 if reference is dead */
+[[gnu::hot]] int
+sgc_mark_weak(struct sgc*, sgc_ref*);
+
 /* runs the garbage collector, updating any native references.
  * returns 0 on success
  * returns 1 on out-of-memory:
