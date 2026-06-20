@@ -345,13 +345,6 @@ sgc_mark(struct sgc* sgc, sgc_ref* what)
   }
 }
 
-/* ahhh... i think i'll have to change the tricolor abstraction
- * to a four color abstraction!
- * white -> gray -> red/blue
- * set white->gray->red during state_mark
- * set red->gray->blue during state_update
- * if a non-white reference is found during state_update,
- * then the reference must be set to a NULLREF and return true */
 [[gnu::hot]] int
 sgc_mark_weak(struct sgc* sgc, sgc_ref* what)
 {
