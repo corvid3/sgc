@@ -115,6 +115,8 @@ sgc_resolve(struct sgc const*, sgc_ref);
 sgc_ref
 sgc_resolve_type(struct sgc*, sgc_ref);
 
+/* the marked reference is valid to dereference/use in a visit subroutine
+ * all the way up until it is passed to sgc_marked */
 [[gnu::hot]]
 void
 sgc_mark(struct sgc*, sgc_ref*);

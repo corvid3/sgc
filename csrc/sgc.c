@@ -1,3 +1,5 @@
+#define VALGRIND
+
 #include <assert.h>
 #include <setjmp.h>
 #include <stdint.h>
@@ -5,7 +7,17 @@
 #include <sys/sysinfo.h>
 #include <threads.h>
 
+#ifdef VALGRIND
+#include <valgrind/memcheck.h>
+#include <valgrind/valgrind.h>
+#endif
+
 #include "sgc.h"
+
+/* INVARIANT:
+ *   type allocations must be located in the heap BEFORE
+ *   any of the instance objects in memory
+ */
 
 enum sgc_state : uint32_t
 {
@@ -13,6 +25,7 @@ enum sgc_state : uint32_t
 
   state_mark,
   state_update,
+  state_slide,
 };
 
 struct header
@@ -31,7 +44,7 @@ enum color
    * follows white->gl->red path */
   RED,
 
-  /* allocations marked during the state_mark pass
+  /* allocations marked during the state_update pass
    * follows red->gl->blue path */
   BLUE,
 };
@@ -118,6 +131,11 @@ sgc_init(size_t heap_size,
   out.gl_len = 0;
   out.gl = malloc(sizeof(sgc_ref) * default_gl_cap);
 
+#ifdef VALGRIND
+  VALGRIND_CREATE_BLOCK(out.heap, out.size, "SGC-HEAP");
+  VALGRIND_MAKE_MEM_NOACCESS(out.heap, out.size);
+#endif
+
   return out;
 }
 
@@ -129,7 +147,7 @@ sgc_resolve(struct sgc const* sgc, sgc_ref const ref)
 
 [[gnu::const, gnu::hot]]
 static inline struct header*
-get_header(struct sgc* sgc, sgc_ref const what)
+get_header(struct sgc const* restrict sgc, sgc_ref const what)
 {
   return sgc_resolve(sgc, what - sizeof(struct header));
 }
@@ -152,7 +170,9 @@ get_cleanup(struct sgc const* sgc, struct header const hdr)
 {
   if (unlikely(IS_TYPEALLOC(hdr)))
     return 0;
-  return ((struct sgc_type const*)sgc_resolve(sgc, GETTY(hdr)))->cleanup;
+  sgc_ref const typeref = GETTY(hdr);
+  struct sgc_type const* type = sgc_resolve(sgc, typeref);
+  return type->cleanup;
 }
 
 [[gnu::hot, gnu::const]]
@@ -186,7 +206,7 @@ get_size(struct sgc const* restrict sgc,
   };
 
   if (unlikely(IS_TYPEALLOC(hdr)))
-    return sizeof(struct sgc_type) + (hdr.type & typesize_mask);
+    return (hdr.type & typesize_mask);
 
   sgc_sizeof const sizeof_ = get_sizeof(sgc, hdr);
   assert(sizeof_ != 0);
@@ -241,11 +261,16 @@ cleanupall(struct sgc* sgc)
   sgc_ref ref = sizeof(struct header);
 
   while (ref < sgc->bump) {
-    struct header const hdr = *get_header(sgc, ref);
+    struct header const* hdr_ptr = get_header(sgc, ref);
+    struct header const hdr = *hdr_ptr;
     size_t const size = get_size(sgc, ref, hdr, 0);
     hdr_prefetch(sgc_resolve(sgc, next_hdr(size, ref)));
     try_cleanup(sgc, hdr, ref);
     ref = next_hdr(size, ref);
+
+    /* VALGRIND note: cannot mark allocations as being NOACCESS
+     * here, as sgc types would be marked as NOACCESS
+     * while future objects of said types would read the free'd types */
   }
 }
 
@@ -253,8 +278,13 @@ void
 sgc_uninit(struct sgc* sgc)
 {
   cleanupall(sgc);
-  if (sgc->heap)
+  if (sgc->heap) {
     free(sgc->heap);
+#ifdef VALGRIND
+    VALGRIND_MAKE_MEM_NOACCESS(sgc->heap, sgc->size);
+#endif
+  }
+
   if (sgc->gl)
     free(sgc->gl);
 }
@@ -311,10 +341,17 @@ allocspace(struct sgc* sgc, size_t const size)
   return out;
 }
 
+size_t
+getfwd(struct header* hdr)
+{
+  return GETFWD(*hdr);
+}
+
 [[gnu::flatten]]
 void
 sgc_mark(struct sgc* sgc, sgc_ref* what)
 {
+  sgc_ref const old = *what;
   struct header* restrict hdr_ptr = get_header(sgc, *what);
   __builtin_prefetch(hdr_ptr, 1, 3);
 
@@ -331,21 +368,19 @@ sgc_mark(struct sgc* sgc, sgc_ref* what)
     SETCOL(hdr, RED);
   } else {
     SETCOL(hdr, BLUE);
+    *what &= ~SGC_REF_MASK;
+    *what |= GETFWD(hdr);
   }
 
   enum color const new_col = GETCOL(hdr);
   if (color == new_col)
     return;
 
-  gl_push(sgc, *what);
+  gl_push(sgc, old);
   *hdr_ptr = hdr;
-  if (sgc->state == state_update) {
-    *what &= SGC_REF_MASK;
-    *what |= GETFWD(hdr);
-  }
 }
 
-[[gnu::hot]] int
+[[gnu::flatten]] int
 sgc_mark_weak(struct sgc* sgc, sgc_ref* what)
 {
   struct header* restrict hdr_ptr = get_header(sgc, *what);
@@ -361,7 +396,7 @@ sgc_mark_weak(struct sgc* sgc, sgc_ref* what)
 
   enum color const color = GETCOL(hdr);
   if (sgc->state == state_update) {
-    *what &= SGC_REF_MASK;
+    *what &= ~SGC_REF_MASK;
     if (color == RED)
       *what |= GETFWD(hdr);
     else if (color == WHITE)
@@ -388,11 +423,34 @@ slide(struct sgc* sgc, sgc_ref ref)
     SETCOL(hdr, WHITE);
     SETFWD(hdr, SGC_NULLREF);
 
+#ifdef VALGRIND
+    VALGRIND_MAKE_MEM_DEFINED(sgc->heap + fwd - sizeof(struct header),
+                              allocsize + sizeof(struct header));
+#endif
+
     __builtin_memmove(sgc->heap + fwd - sizeof(struct header),
                       sgc->heap + ref - sizeof(struct header),
                       allocsize + sizeof(struct header));
+
+#ifdef VALGRIND
+    sgc_ref const ref_true = ref - sizeof(struct header);
+    sgc_ref const fwd_true = fwd - sizeof(struct header);
+    size_t const size_true = allocsize + sizeof(struct header);
+    if (ref_true < fwd_true + size_true) {
+      VALGRIND_MAKE_MEM_NOACCESS(sgc->heap + fwd_true + size_true,
+                                 (ref_true + size_true) -
+                                   (fwd_true + size_true));
+    } else {
+      VALGRIND_MAKE_MEM_NOACCESS(sgc->heap + ref - sizeof(struct header),
+                                 allocsize + sizeof(struct header));
+    }
+#endif
+
   } else {
-    try_cleanup(sgc, hdr, ref);
+#ifdef VALGRIND
+    VALGRIND_MAKE_MEM_NOACCESS(sgc->heap + ref - sizeof(struct header),
+                               allocsize + sizeof(struct header));
+#endif
   }
 
   return next_hdr(allocsize, ref);
@@ -401,6 +459,7 @@ slide(struct sgc* sgc, sgc_ref ref)
 static void
 slideheap(struct sgc* sgc, uintptr_t const oldbump)
 {
+  sgc->state = state_slide;
   sgc_ref begin = sizeof(struct header);
   while (begin < oldbump)
     begin = slide(sgc, begin);
@@ -416,11 +475,13 @@ compactref(struct sgc* sgc, sgc_ref const ref)
   register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
-  // hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
+  hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
   if (unlikely(GETCOL(hdr) == RED)) {
     sgc_ref const newspace = allocspace(sgc, allocsize);
     SETFWD(hdr, newspace);
+    if (!IS_TYPEALLOC(hdr))
+      hdr.type = GETFWD(*get_header(sgc, hdr.type));
   } else {
     try_cleanup(sgc, hdr, ref);
   }
@@ -498,9 +559,15 @@ sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
 
   struct header* hdr = get_header(sgc, out);
 
+#ifdef VALGRIND
+  VALGRIND_MAKE_MEM_DEFINED(hdr, sizeof *hdr);
+  VALGRIND_MAKE_MEM_UNDEFINED(hdr + 1, size);
+#endif
+
   hdr->type = type;
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
+
   return out;
 }
 
@@ -508,7 +575,6 @@ sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
 sgc_ref
 sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
 {
-
   size_t const size = max(sizeof(struct sgc_type), size_);
   sgc_ref const out = allocspace(sgc, size);
 
@@ -516,9 +582,16 @@ sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
     return SGC_NULLREF;
 
   struct header* hdr = get_header(sgc, out);
-  hdr->type = TYPE_BIT;
+
+#ifdef VALGRIND
+  VALGRIND_MAKE_MEM_DEFINED(hdr, sizeof *hdr);
+  VALGRIND_MAKE_MEM_UNDEFINED(hdr + 1, size);
+#endif
+
+  hdr->type = TYPE_BIT | size;
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
+
   return out;
 }
 
