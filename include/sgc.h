@@ -26,6 +26,9 @@ typedef size_t (*sgc_sizeof)(struct sgc const*,
 typedef void (*sgc_visit)(struct sgc*, sgc_ref);
 typedef void (*sgc_root_visit)(struct sgc*, void*);
 typedef void (*sgc_cleanup)(struct sgc*, sgc_ref);
+typedef void (*sgc_clear_behavior)(struct sgc const*,
+                                   sgc_ref,
+                                   size_t alloc_size);
 
 struct sgc_type
 {
@@ -49,6 +52,11 @@ struct sgc_type
    * use these for cleaning up system resources that could have potentially
    * leaked due to user mismanagement. */
   sgc_cleanup cleanup;
+
+  /* performed immediately after allocation,
+   * may be null to indicate nothing to do to clear an allocation.
+   * there is a provided sgc_clear_set_zero() helper function. */
+  sgc_clear_behavior clear;
 };
 
 #define sgc_static_size(in) (SGC_SIZEBIT | (uintptr_t)(in))
@@ -80,6 +88,7 @@ enum : uintptr_t
   /* ~64gb of accessable memory */
   SGC_REF_MASK = (1UL << 36U) - 1UL,
   SGC_ALIGNMENT = 8,
+  SGC_ALIGNMENT_MASK = SGC_ALIGNMENT - 1U,
   SGC_NULLREF = SGC_REF_MASK,
   SGC_GLINDEF = -1UL,
   SGC_SIZEBIT = 1UL << 63UL,
@@ -107,13 +116,16 @@ sgc_alloc(struct sgc*, sgc_ref type, void const* ctor_params);
 sgc_ref
 sgc_alloc_type(struct sgc*, size_t size);
 
-[[gnu::const, gnu::hot]]
-void*
-sgc_resolve(struct sgc const*, sgc_ref);
+[[gnu::const, gnu::hot, gnu::always_inline]]
+inline void*
+sgc_resolve(struct sgc const* sgc, sgc_ref ref)
+{
+  return sgc->heap + (ref & SGC_REF_MASK);
+}
 
 [[gnu::const, gnu::hot]]
 sgc_ref
-sgc_resolve_type(struct sgc*, sgc_ref);
+sgc_resolve_type(struct sgc const*, sgc_ref);
 
 /* the marked reference is valid to dereference/use in a visit subroutine
  * all the way up until it is passed to sgc_marked */
@@ -135,5 +147,16 @@ sgc_mark_weak(struct sgc*, sgc_ref*);
 int
 sgc_collect(struct sgc*);
 
+/* invokes the allocation types `sizeof()` operator */
+size_t
+sgc_ref_sizeof(struct sgc*, sgc_ref);
+
+/* total usage of an allocation, including alignment and bookkeeping */
+size_t
+sgc_ref_total_usage(struct sgc*, sgc_ref);
+
 sgc_ref
 sgc_ptr_to_ref(struct sgc* const, void* const);
+
+void
+sgc_clear_set_zero(struct sgc const*, sgc_ref, size_t);

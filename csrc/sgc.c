@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <setjmp.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <sys/sysinfo.h>
 #include <threads.h>
@@ -19,6 +20,22 @@
  *   any of the instance objects in memory
  */
 
+struct cutf8_string_view
+{
+  char const* str;
+  size_t bytesize;
+};
+struct twigs_type
+{
+  struct sgc_type gc;
+
+  /* typetag that this primitive type is of */
+  uint64_t typetag;
+
+  /* typename used for debugging purposes */
+  struct cutf8_string_view debug_typename;
+};
+
 enum sgc_state : uint32_t
 {
   state_not_collecting,
@@ -28,7 +45,7 @@ enum sgc_state : uint32_t
   state_slide,
 };
 
-struct header
+struct __attribute((aligned(SGC_ALIGNMENT))) header
 {
   sgc_ref type;
   uintptr_t mark;
@@ -58,22 +75,16 @@ enum : uintptr_t
 
 [[gnu::const]]
 static sgc_ref
-align(sgc_ref const addr, size_t const alignment)
+align(sgc_ref const addr)
 {
-  return ((addr + alignment - 1) & ~(alignment - 1));
+  return (addr + SGC_ALIGNMENT_MASK) & ~SGC_ALIGNMENT_MASK;
 }
 
 [[gnu::const]]
 static size_t
-pad(uintptr_t const addr, size_t const alignment)
+pad(uintptr_t const addr)
 {
-  return align(addr, alignment) - addr;
-}
-
-static void
-alignheap(struct sgc* sgc)
-{
-  sgc->bump += pad((uintptr_t)sgc->heap + sgc->bump, SGC_ALIGNMENT);
+  return align(addr) - addr;
 }
 
 [[gnu::hot]]
@@ -139,11 +150,11 @@ sgc_init(size_t heap_size,
   return out;
 }
 
-inline void*
-sgc_resolve(struct sgc const* sgc, sgc_ref const ref)
-{
-  return sgc->heap + (ref & SGC_REF_MASK);
-}
+// inline void*
+// sgc_resolve(struct sgc const* sgc, sgc_ref const ref)
+// {
+//   return sgc->heap + (ref & SGC_REF_MASK);
+// }
 
 [[gnu::const, gnu::hot]]
 static inline struct header*
@@ -155,12 +166,11 @@ get_header(struct sgc const* restrict sgc, sgc_ref const what)
 #define likely(exp) __builtin_expect(!!(exp), 1)
 #define unlikely(exp) __builtin_expect(!!(exp), 0)
 
-sgc_ref
-sgc_resolve_type(struct sgc* sgc, sgc_ref const ref)
+[[gnu::always_inline]]
+inline sgc_ref
+sgc_resolve_type(struct sgc const* sgc, sgc_ref const ref)
 {
   sgc_ref const typeref = GETTY(*get_header(sgc, ref));
-  if (typeref == SGC_NULLREF)
-    return 0;
   return typeref;
 }
 
@@ -208,10 +218,18 @@ get_size(struct sgc const* restrict sgc,
   if (unlikely(IS_TYPEALLOC(hdr)))
     return (hdr.type & typesize_mask);
 
+  // struct cutf8_string_view strview =
+  //   ((struct twigs_type const*)sgc_resolve(sgc, hdr.type))->debug_typename;
+  // // printf("getting size: %.*s\n", (int)strview.bytesize, strview.str);
+  // if (strview.str == 0)
+  //   printf("%lu\n", ref);
+
   sgc_sizeof const sizeof_ = get_sizeof(sgc, hdr);
   assert(sizeof_ != 0);
+
   if (unlikely((uintptr_t)sizeof_ & SGC_SIZEBIT))
-    return UINT32_MAX & (uintptr_t)sizeof_;
+    return UINT32_MAX & (unsigned long)sizeof_;
+
   return sizeof_(sgc, ref, ctor);
 }
 
@@ -249,10 +267,9 @@ try_visit(struct sgc* restrict sgc, sgc_ref ref)
 }
 
 static inline size_t
-next_hdr(size_t const size, sgc_ref const ref)
+next_alloc(size_t const size, sgc_ref const ref)
 {
-  return align((ref & SGC_REF_MASK) + size, SGC_ALIGNMENT) +
-         sizeof(struct header);
+  return align((ref & SGC_REF_MASK) + size) + sizeof(struct header);
 }
 
 static void
@@ -264,9 +281,8 @@ cleanupall(struct sgc* sgc)
     struct header const* hdr_ptr = get_header(sgc, ref);
     struct header const hdr = *hdr_ptr;
     size_t const size = get_size(sgc, ref, hdr, 0);
-    hdr_prefetch(sgc_resolve(sgc, next_hdr(size, ref)));
     try_cleanup(sgc, hdr, ref);
-    ref = next_hdr(size, ref);
+    ref = next_alloc(size, ref);
 
     /* VALGRIND note: cannot mark allocations as being NOACCESS
      * here, as sgc types would be marked as NOACCESS
@@ -329,12 +345,14 @@ freespace(struct sgc const* restrict sgc)
 static sgc_ref
 allocspace(struct sgc* sgc, size_t const size)
 {
-  alignheap(sgc);
-  uintptr_t const consumption = size + sizeof(struct header);
+  uintptr_t const alignment_consumption = pad((uintptr_t)sgc->heap + sgc->bump);
+  uintptr_t const consumption =
+    alignment_consumption + size + sizeof(struct header);
 
   if (unlikely(consumption >= freespace(sgc)))
     return SGC_NULLREF;
 
+  sgc->bump += alignment_consumption;
   sgc->bump += sizeof(struct header);
   sgc_ref const out = sgc->bump;
   sgc->bump += size;
@@ -367,6 +385,8 @@ sgc_mark(struct sgc* sgc, sgc_ref* what)
   if (sgc->state == state_mark) {
     SETCOL(hdr, RED);
   } else {
+    if (!IS_TYPEALLOC(hdr))
+      hdr.type = GETFWD(*get_header(sgc, hdr.type));
     SETCOL(hdr, BLUE);
     *what &= ~SGC_REF_MASK;
     *what |= GETFWD(hdr);
@@ -453,7 +473,7 @@ slide(struct sgc* sgc, sgc_ref ref)
 #endif
   }
 
-  return next_hdr(allocsize, ref);
+  return next_alloc(allocsize, ref);
 }
 
 static void
@@ -475,19 +495,16 @@ compactref(struct sgc* sgc, sgc_ref const ref)
   register struct header hdr = *hdr_ptr;
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
-  hdr_prefetch(sgc_resolve(sgc, next_hdr(allocsize, ref)));
 
   if (unlikely(GETCOL(hdr) == RED)) {
     sgc_ref const newspace = allocspace(sgc, allocsize);
     SETFWD(hdr, newspace);
-    if (!IS_TYPEALLOC(hdr))
-      hdr.type = GETFWD(*get_header(sgc, hdr.type));
   } else {
     try_cleanup(sgc, hdr, ref);
   }
 
   *hdr_ptr = hdr;
-  return next_hdr(allocsize, ref);
+  return next_alloc(allocsize, ref);
 }
 
 static void
@@ -554,6 +571,7 @@ sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
   else
     size = type_->size(sgc, SGC_NULLREF, ctor_params);
   sgc_ref const out = allocspace(sgc, size);
+
   if (unlikely(out == SGC_NULLREF))
     return SGC_NULLREF;
 
@@ -567,6 +585,9 @@ sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
   hdr->type = type;
   header_setcolor(hdr, WHITE);
   header_setfwd(hdr, SGC_NULLREF);
+
+  if (type_->clear)
+    type_->clear(sgc, out, size);
 
   return out;
 }
@@ -599,4 +620,27 @@ sgc_ref
 sgc_ptr_to_ref(struct sgc* const sgc, void* const ptr)
 {
   return ptr - sgc->heap;
+}
+
+size_t
+sgc_ref_sizeof(struct sgc* sgc, sgc_ref ref)
+{
+  if (ref == SGC_NULLREF)
+    return 0;
+
+  struct header* hdr = get_header(sgc, ref);
+  size_t const out = get_size(sgc, ref, *hdr, 0);
+  return out;
+}
+
+size_t
+sgc_ref_total_usage(struct sgc* sgc, sgc_ref ref)
+{
+  return align(sgc_ref_sizeof(sgc, ref)) + sizeof(struct header);
+}
+
+void
+sgc_clear_set_zero(struct sgc const* sgc, sgc_ref ref, size_t alloc_size)
+{
+  __builtin_memset(sgc_resolve(sgc, ref), 0, alloc_size);
 }
