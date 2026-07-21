@@ -20,22 +20,6 @@
  *   any of the instance objects in memory
  */
 
-struct cutf8_string_view
-{
-  char const* str;
-  size_t bytesize;
-};
-struct twigs_type
-{
-  struct sgc_type gc;
-
-  /* typetag that this primitive type is of */
-  uint64_t typetag;
-
-  /* typename used for debugging purposes */
-  struct cutf8_string_view debug_typename;
-};
-
 enum sgc_state : uint32_t
 {
   state_not_collecting,
@@ -217,12 +201,6 @@ get_size(struct sgc const* restrict sgc,
 
   if (unlikely(IS_TYPEALLOC(hdr)))
     return (hdr.type & typesize_mask);
-
-  // struct cutf8_string_view strview =
-  //   ((struct twigs_type const*)sgc_resolve(sgc, hdr.type))->debug_typename;
-  // // printf("getting size: %.*s\n", (int)strview.bytesize, strview.str);
-  // if (strview.str == 0)
-  //   printf("%lu\n", ref);
 
   sgc_sizeof const sizeof_ = get_sizeof(sgc, hdr);
   assert(sizeof_ != 0);
