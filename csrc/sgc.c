@@ -51,21 +51,21 @@ enum : uintptr_t
   TYPE_BIT = 1UL << 60UL,
 };
 
-[[gnu::const]]
-static sgc_ref
+[[gnu::const, gnu::always_inline]]
+static inline sgc_ref
 align(sgc_ref const addr)
 {
   return (addr + SGC_ALIGNMENT_MASK) & ~SGC_ALIGNMENT_MASK;
 }
 
-[[gnu::const]]
-static size_t
+[[gnu::const, gnu::always_inline]]
+static inline size_t
 pad(uintptr_t const addr)
 {
   return align(addr) - addr;
 }
 
-[[gnu::hot]]
+[[gnu::always_inline]]
 static inline void
 header_setcolor(struct sgc_header* restrict hdr, enum color const color)
 {
@@ -73,13 +73,14 @@ header_setcolor(struct sgc_header* restrict hdr, enum color const color)
   hdr->mark |= (uintptr_t)color << COLOR_OFF;
 }
 
+[[gnu::const, gnu::always_inline]]
 static inline int
 is_typealloc(struct sgc_header const* restrict hdr)
 {
   return !!(hdr->type & TYPE_BIT);
 }
 
-[[gnu::hot]]
+[[gnu::always_inline]]
 static inline void
 setfwd(struct sgc_header* restrict hdr, sgc_ref const ref)
 {
@@ -87,12 +88,14 @@ setfwd(struct sgc_header* restrict hdr, sgc_ref const ref)
   hdr->mark |= ref & SGC_REF_MASK;
 }
 
+[[gnu::const, gnu::always_inline]]
 static inline size_t
 getfwd(struct sgc_header const* restrict hdr)
 {
   return hdr->mark & SGC_REF_MASK;
 }
 
+[[gnu::always_inline]]
 static inline void
 setcol(struct sgc_header* restrict hdr, enum color const col)
 {
@@ -100,12 +103,14 @@ setcol(struct sgc_header* restrict hdr, enum color const col)
   hdr->mark |= (uintptr_t)(col) << COLOR_OFF;
 }
 
+[[gnu::const, gnu::always_inline]]
 static inline enum color
 getcol(struct sgc_header const* restrict hdr)
 {
   return (hdr->mark & COLOR_MASK) >> COLOR_OFF;
 }
 
+[[gnu::const, gnu::always_inline]]
 static inline sgc_ref
 getty(struct sgc_header const* restrict hdr)
 {
@@ -153,13 +158,6 @@ sgc_init(size_t heap_size,
 // {
 //   return sgc->heap + (ref & SGC_REF_MASK);
 // }
-
-[[gnu::const, gnu::hot]]
-static inline struct sgc_header*
-get_header(struct sgc const* restrict sgc, sgc_ref const what)
-{
-  return sgc_resolve(sgc, what - sizeof(struct sgc_header));
-}
 
 #define likely(exp) __builtin_expect(!!(exp), 1)
 #define unlikely(exp) __builtin_expect(!!(exp), 0)
@@ -239,7 +237,7 @@ try_cleanup(struct sgc* restrict sgc,
 static void
 try_visit(struct sgc* restrict sgc, sgc_ref ref)
 {
-  struct sgc_header const* restrict hdr = get_header(sgc, ref);
+  struct sgc_header const* restrict hdr = sgc_get_header(sgc, ref);
 
   if (unlikely(is_typealloc(hdr))) {
     struct sgc_type const* type = sgc_resolve(sgc, ref);
@@ -249,7 +247,7 @@ try_visit(struct sgc* restrict sgc, sgc_ref ref)
     sgc_visit const visit = get_visit(sgc, hdr);
     if (likely(visit))
       visit(sgc, ref);
-    sgc_mark(sgc, &get_header(sgc, ref)->type);
+    sgc_mark(sgc, &sgc_get_header(sgc, ref)->type);
   }
 }
 
@@ -265,7 +263,7 @@ cleanupall(struct sgc* sgc)
   sgc_ref ref = sizeof(struct sgc_header);
 
   while (ref < sgc->bump) {
-    struct sgc_header const* hdr = get_header(sgc, ref);
+    struct sgc_header const* hdr = sgc_get_header(sgc, ref);
     size_t const size = get_size(sgc, ref, hdr, 0);
     try_cleanup(sgc, hdr, ref);
     ref = next_alloc(size, ref);
@@ -350,7 +348,7 @@ void
 sgc_mark(struct sgc* sgc, sgc_ref* what)
 {
   sgc_ref const old = *what;
-  struct sgc_header* restrict hdr = get_header(sgc, *what);
+  struct sgc_header* restrict hdr = sgc_get_header(sgc, *what);
   __builtin_prefetch(hdr, 1, 3);
 
   if (unlikely(*what == SGC_NULLREF))
@@ -365,7 +363,7 @@ sgc_mark(struct sgc* sgc, sgc_ref* what)
     setcol(hdr, RED);
   } else {
     if (!is_typealloc(hdr))
-      hdr->type = getfwd(get_header(sgc, hdr->type));
+      hdr->type = getfwd(sgc_get_header(sgc, hdr->type));
     setcol(hdr, BLUE);
     *what &= ~SGC_REF_MASK;
     *what |= getfwd(hdr);
@@ -381,7 +379,7 @@ sgc_mark(struct sgc* sgc, sgc_ref* what)
 [[gnu::flatten]] int
 sgc_mark_weak(struct sgc* sgc, sgc_ref* what)
 {
-  struct sgc_header* restrict hdr = get_header(sgc, *what);
+  struct sgc_header* restrict hdr = sgc_get_header(sgc, *what);
   __builtin_prefetch(hdr, 1, 3);
 
   if (unlikely(*what == SGC_NULLREF))
@@ -408,7 +406,7 @@ sgc_mark_weak(struct sgc* sgc, sgc_ref* what)
 static size_t
 slide(struct sgc* sgc, sgc_ref ref)
 {
-  struct sgc_header* hdr = get_header(sgc, ref);
+  struct sgc_header* hdr = sgc_get_header(sgc, ref);
   hdr_prefetch(hdr);
   hdr_prefetch(sgc_resolve(sgc, hdr->type));
 
@@ -465,9 +463,8 @@ slideheap(struct sgc* sgc, uintptr_t const oldbump)
 static sgc_ref
 compactref(struct sgc* sgc, sgc_ref const ref)
 {
-  struct sgc_header* hdr = get_header(sgc, ref);
+  struct sgc_header* hdr = sgc_get_header(sgc, ref);
   hdr_prefetch(hdr);
-  hdr_prefetch(sgc_resolve(sgc, getty(hdr)));
 
   size_t const allocsize = get_size(sgc, ref, hdr, 0);
 
@@ -549,7 +546,7 @@ sgc_alloc(struct sgc* restrict sgc, sgc_ref const type, void const* ctor_params)
   if (unlikely(out == SGC_NULLREF))
     return SGC_NULLREF;
 
-  struct sgc_header* hdr = get_header(sgc, out);
+  struct sgc_header* hdr = sgc_get_header(sgc, out);
 
 #ifdef VALGRIND
   VALGRIND_MAKE_MEM_DEFINED(hdr, sizeof *hdr);
@@ -576,7 +573,7 @@ sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
   if (unlikely(out == SGC_NULLREF))
     return SGC_NULLREF;
 
-  struct sgc_header* hdr = get_header(sgc, out);
+  struct sgc_header* hdr = sgc_get_header(sgc, out);
 
 #ifdef VALGRIND
   VALGRIND_MAKE_MEM_DEFINED(hdr, sizeof *hdr);
@@ -591,7 +588,7 @@ sgc_alloc_type(struct sgc* restrict sgc, size_t const size_)
 }
 
 sgc_ref
-sgc_ptr_to_ref(struct sgc* const sgc, void* const ptr)
+sgc_ptr_to_ref(struct sgc* const sgc, void const* ptr)
 {
   return ptr - sgc->heap;
 }
@@ -602,7 +599,7 @@ sgc_ref_sizeof(struct sgc* sgc, sgc_ref ref)
   if (ref == SGC_NULLREF)
     return 0;
 
-  struct sgc_header* hdr = get_header(sgc, ref);
+  struct sgc_header* hdr = sgc_get_header(sgc, ref);
   size_t const out = get_size(sgc, ref, hdr, 0);
   return out;
 }

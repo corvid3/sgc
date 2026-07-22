@@ -122,23 +122,14 @@ sgc_alloc(struct sgc*, sgc_ref type, void const* ctor_params);
 sgc_ref
 sgc_alloc_type(struct sgc*, size_t size);
 
-[[gnu::const, gnu::hot, gnu::always_inline]]
 inline void*
-sgc_resolve(struct sgc const* sgc, sgc_ref ref)
-{
-  return sgc->heap + (ref & SGC_REF_MASK);
-}
+sgc_resolve(struct sgc const* sgc, sgc_ref ref);
 
-[[gnu::const, gnu::hot, gnu::always_inline]]
 inline sgc_ref
-sgc_resolve_type(struct sgc const* sgc, sgc_ref const ref)
-{
-  sgc_ref const typeref = ((struct sgc_header const*)sgc_resolve(
-                             sgc, (ref - sizeof(struct sgc_header))))
-                            ->type &
-                          SGC_REF_MASK;
-  return typeref;
-}
+sgc_resolve_type(struct sgc const* sgc, sgc_ref ref);
+
+#define sgc_prefetch(sgc, ref, write, temporal)                                \
+  __builtin_prefetch(sgc_resolve(sgc, ref), !!(write), temporal)
 
 /* the marked reference is valid to dereference/use in a visit subroutine
  * all the way up until it is passed to sgc_marked */
@@ -169,7 +160,40 @@ size_t
 sgc_ref_total_usage(struct sgc*, sgc_ref);
 
 sgc_ref
-sgc_ptr_to_ref(struct sgc* const, void* const);
+sgc_ptr_to_ref(struct sgc*, void const*);
 
 void
 sgc_clear_set_zero(struct sgc const*, sgc_ref, size_t);
+
+/*
+ * NOTE: inline implemenations
+ * !! don't bother reading past here if you're looking for docs !!
+ */
+
+[[gnu::const, gnu::hot, gnu::always_inline]]
+inline void*
+sgc_resolve(struct sgc const* sgc, sgc_ref ref)
+{
+  return sgc->heap + (ref & SGC_REF_MASK);
+};
+
+/* this function is exposed for inlining purposes
+ * otherwise, you shouldn't be _touching_ this unless you
+ * are doing some debugging. */
+[[gnu::const, gnu::hot, gnu::always_inline]]
+inline struct sgc_header*
+sgc_get_header(struct sgc const* restrict sgc, sgc_ref const what)
+{
+  return sgc_resolve(sgc, what - sizeof(struct sgc_header));
+}
+
+[[gnu::const, gnu::hot, gnu::always_inline]]
+inline sgc_ref
+sgc_resolve_type(struct sgc const* sgc, sgc_ref const ref)
+{
+  sgc_ref const typeref = ((struct sgc_header const*)sgc_resolve(
+                             sgc, (ref - sizeof(struct sgc_header))))
+                            ->type &
+                          SGC_REF_MASK;
+  return typeref;
+}
