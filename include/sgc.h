@@ -94,6 +94,12 @@ enum : uintptr_t
   SGC_SIZEBIT = 1UL << 63UL,
 };
 
+struct __attribute((aligned(SGC_ALIGNMENT))) sgc_header
+{
+  sgc_ref type;
+  uintptr_t mark;
+};
+
 /* @param gl_maxsize | set to SGC_GLINDEF to allow for indefinite resizing */
 struct sgc
 sgc_init(size_t heap_size,
@@ -123,9 +129,16 @@ sgc_resolve(struct sgc const* sgc, sgc_ref ref)
   return sgc->heap + (ref & SGC_REF_MASK);
 }
 
-[[gnu::const, gnu::hot]]
-sgc_ref
-sgc_resolve_type(struct sgc const*, sgc_ref);
+[[gnu::const, gnu::hot, gnu::always_inline]]
+inline sgc_ref
+sgc_resolve_type(struct sgc const* sgc, sgc_ref const ref)
+{
+  sgc_ref const typeref = ((struct sgc_header const*)sgc_resolve(
+                             sgc, (ref - sizeof(struct sgc_header))))
+                            ->type &
+                          SGC_REF_MASK;
+  return typeref;
+}
 
 /* the marked reference is valid to dereference/use in a visit subroutine
  * all the way up until it is passed to sgc_marked */
