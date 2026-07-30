@@ -19,7 +19,11 @@ std = 23
 sources = { }
 
 [c]
-flags = { "-Wall" "-Wextra" "-Werror" "-fno-omit-frame-pointer" }
+flags = {
+	"-Wall" "-Wextra" "-Werror"
+	"-fno-omit-frame-pointer"
+	# "-fsanitize=address"
+}
 std = 17
 sources = {
 	"sgc.c"

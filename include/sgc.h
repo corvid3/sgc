@@ -87,7 +87,9 @@ enum : uintptr_t
 {
   /* ~64gb of accessable memory */
   SGC_REF_MASK = (1UL << 36U) - 1UL,
-  SGC_ALIGNMENT = 8,
+
+  /* FIXME: alignment >16 breaks stuff */
+  SGC_ALIGNMENT = 16,
   SGC_ALIGNMENT_MASK = SGC_ALIGNMENT - 1U,
   SGC_NULLREF = SGC_REF_MASK,
   SGC_GLINDEF = -1UL,
