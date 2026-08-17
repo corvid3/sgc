@@ -11,6 +11,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <threads.h>
+#include <valgrind/memcheck.h>
+#include <valgrind/valgrind.h>
 
 struct sgc;
 
@@ -89,7 +91,7 @@ enum : uintptr_t
   SGC_REF_MASK = (1UL << 36U) - 1UL,
 
   /* FIXME: alignment >16 breaks stuff */
-  SGC_ALIGNMENT = 16,
+  SGC_ALIGNMENT = 4,
   SGC_ALIGNMENT_MASK = SGC_ALIGNMENT - 1U,
   SGC_NULLREF = SGC_REF_MASK,
   SGC_GLINDEF = -1UL,
@@ -193,9 +195,10 @@ sgc_get_header(struct sgc const* restrict sgc, sgc_ref const what)
 inline sgc_ref
 sgc_resolve_type(struct sgc const* sgc, sgc_ref const ref)
 {
-  sgc_ref const typeref = ((struct sgc_header const*)sgc_resolve(
-                             sgc, (ref - sizeof(struct sgc_header))))
-                            ->type &
-                          SGC_REF_MASK;
-  return typeref;
+
+  struct sgc_header const* hdr = sgc_get_header(sgc, ref);
+  VALGRIND_MAKE_MEM_DEFINED(hdr, sizeof *hdr);
+  sgc_ref const out = hdr->type & SGC_REF_MASK;
+  VALGRIND_MAKE_MEM_NOACCESS(hdr, sizeof *hdr);
+  return out;
 }
